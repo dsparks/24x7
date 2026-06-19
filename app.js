@@ -7,6 +7,7 @@ const APP_NAME = '24×7';          // ← alt names: 'hotmap', 'wgrid'. One-line
 const LS = {
   settings: 'grid.settings',
   cache:    'grid.cache',         // last forecast payload, for instant paint
+  coach:    'grid.coach',         // '1' once the first-run gesture hints are dismissed
 };
 const CACHE_TTL = 90 * 60 * 1000; // 90 min: render stale instantly, refresh quietly
 
@@ -159,12 +160,20 @@ const mmToIn = mm => mm / 25.4;
 // intensity levels 1–5; tuned in CSS via .l1–.l5
 const RAIN_LABEL = { 1:'misty', 2:'drizzle', 3:'light rain', 4:'moderate rain', 5:'downpour' };
 const SNOW_LABEL = { 1:'flurries', 2:'light snow', 3:'moderate snow', 4:'heavy snow', 5:'heavy snow' };
+// WMO thunderstorm codes (95 = thunderstorm; 96/99 = with hail).
+const THUNDER_CODES = new Set([95, 96, 99]);
+const isThunder = cell => !!cell && THUNDER_CODES.has(cell.wcode);
+// WMO freezing-rain codes (66 = light, 67 = heavy). Renders as rain, but flagged.
+const FREEZING_RAIN_CODES = new Set([66, 67]);
+const isFreezingRain = cell => !!cell && FREEZING_RAIN_CODES.has(cell.wcode);
 function precipKind(cell){
   if (!cell) return null;
   const pop = cell.pop || 0;
   const inch = mmToIn(cell.precip || 0);
   const isSnow = (cell.snow || 0) > 0;
-  if (pop <= 0 && inch <= 0) return null;       // nothing to show
+  const thunder = isThunder(cell);
+  const freezing = isFreezingRain(cell);
+  if (pop <= 0 && inch <= 0 && !thunder && !freezing) return null;   // nothing to show
   let level;
   if (isSnow){
     const r = inch * 10;                          // ~liquid→snow ratio
@@ -174,7 +183,12 @@ function precipKind(cell){
   } else {
     level = inch < 0.02 ? 1 : inch < 0.04 ? 2 : inch < 0.06 ? 3 : inch < 0.10 ? 4 : 5;
   }
-  return { level, pop, snow: isSnow, label: (isSnow ? SNOW_LABEL : RAIN_LABEL)[level] };
+  if (thunder && inch <= 0) level = Math.max(level, 3);   // a storm with no forecast amount still reads as real rain
+  // Label precedence: a thunderstorm, then freezing rain, then the plain intensity label.
+  const label = thunder ? 'thunderstorm'
+              : freezing ? 'freezing rain'
+              : (isSnow ? SNOW_LABEL : RAIN_LABEL)[level];
+  return { level, pop, snow: isSnow, thunder, freezing, label };
 }
 
 /* Run Index (stub — refined later). 0 (bad) → 100 (perfect run weather). */
@@ -206,7 +220,7 @@ function runBreakdown(cell){
 }
 
 /* ---------- Time formatting ---------- */
-const WD = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const WD = ['Su','Mo','Tu','We','Th','Fr','Sa'];
 function fmtHour(h){
   if (clock24()) return String(h).padStart(2,'0');
   if (h === 0) return '12a'; if (h === 12) return '12p';
@@ -236,7 +250,7 @@ function buildUrl(lat, lon){
   const p = new URLSearchParams({
     latitude: lat.toFixed(4),
     longitude: lon.toFixed(4),
-    hourly: 'temperature_2m,precipitation_probability,precipitation,snowfall,apparent_temperature,dewpoint_2m,relative_humidity_2m,wind_speed_10m,cloud_cover,weather_code',
+    hourly: 'temperature_2m,precipitation_probability,precipitation,snowfall,apparent_temperature,dewpoint_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,cloud_cover,weather_code',
     daily: 'sunrise,sunset',
     wind_speed_unit: 'mph',
     timezone: 'auto',
@@ -271,6 +285,7 @@ function toDays(j){
       appF: h.apparent_temperature != null ? cToF(h.apparent_temperature[i]) : null,
       dewF: h.dewpoint_2m != null ? cToF(h.dewpoint_2m[i]) : null,
       windMph: h.wind_speed_10m?.[i] ?? null,
+      windDir: h.wind_direction_10m?.[i] ?? null,   // degrees the wind comes FROM (0=N, 90=E)
       rh: h.relative_humidity_2m?.[i] ?? null,
       cloud: h.cloud_cover?.[i] ?? null,          // % cloud cover
       wcode: h.weather_code?.[i] ?? null,         // WMO weather code (95/96/99 = thunderstorm)
@@ -411,12 +426,13 @@ function cellEl(di, h){
   const ink = effInk(di, h, c);           // contrast vs the night-shaded color
 
   const kind = precipKind(cell);
-  if (kind) fx.cells.push({ el, kind, ink, wind: cell.windMph || 0 });   // canvas layer draws the particles
+  if (kind) fx.cells.push({ el, kind, ink, wind: cell.windMph || 0, dir: cell.windDir });   // canvas layer draws the particles
 
   // ambient effects (measured + drawn by the fx layer)
-  const thunder = cell.wcode === 95 || cell.wcode === 96 || cell.wcode === 99;
-  const hot = !kind && cToF(cell.c) >= 95;        // no shimmer where it's precipitating
-  if (thunder || hot) fx.fxCells.push({ el, di, h, thunder, hot });
+  const thunder = isThunder(cell);
+  const windy = !kind && (cell.windMph || 0) >= WIND_MIN;   // dry + notably windy
+  const hot = !kind && !windy && cToF(cell.c) >= 95;        // wind wins over shimmer on hot, dry, windy hours
+  if (thunder || hot || windy) fx.fxCells.push({ el, di, h, thunder, hot, windy, wind: cell.windMph || 0, dir: cell.windDir });
 
   const num = cellNumber(cell);
   if (num != null){
@@ -491,7 +507,31 @@ const FOG_WIDTH = 15, FOG_OPACITY = 0.025; // mist strand line-width & opacity
 // atan(wind / terminal). V_TERM ≈ 15 mph (~6.7 m/s) for typical raindrops.
 // (8mph→28°, 15→45°, 25→59°, 40→69°; asymptotes toward — but never reaches — horizontal.)
 const V_TERM = 15;
-const windAngleRad = mph => Math.atan((mph || 0) / V_TERM);
+// Physical slant is atan(wind/terminal); we dial it back to 80% because the true
+// angle reads visually too aggressive on the small cells.
+const SLANT_SCALE = 0.8;
+
+// Open-Meteo gives wind direction as the compass bearing the wind comes FROM
+// (0=N, 90=E). Convert to the on-screen unit vector it blows TOWARD, with
+// north = top of cell: x is east(+)/west(−), y is south(+, downward)/north(−).
+const windToward = deg => { const r = (deg || 0) * Math.PI / 180; return { x: -Math.sin(r), y: Math.cos(r) }; };
+
+// Precip slant: only the EAST/WEST component tilts the fall (N/S is ignored —
+// rain still falls down). Right (+) when blowing east, left (−) when west. When
+// direction is unknown, fall back to the old full-speed rightward lean.
+function precipSlantRad(mph, deg){
+  const east = deg == null ? (mph || 0) : (mph || 0) * windToward(deg).x;
+  return SLANT_SCALE * Math.atan(east / V_TERM);
+}
+
+// Dry-day wind: a hint.fm-style field of fine, trailing filaments combs across
+// cells that are notably breezy and NOT precipitating (rain already encodes wind
+// via its slant). All filaments flow one uniform direction; windier cells get
+// more of them, moving faster and brighter. Intensity ramps WIND_MIN → WIND_REF.
+const WIND_MIN = 16, WIND_REF = 40;
+const windFrac = mph => Math.max(0, Math.min(1, ((mph || 0) - WIND_MIN) / (WIND_REF - WIND_MIN)));
+const WIND_BUDGET = 1400;     // max filaments across the whole grid (perf cap)
+const WIND_FADE = 0.06;       // per-frame trail erase — lower = longer, silkier trails
 
 function rand(a, b){ return a + Math.random() * (b - a); }
 
@@ -550,7 +590,7 @@ function buildParticles(cell){
   const { w, h, kind } = cell;
   cell.col = cell.ink === '#fff' ? '255,255,255' : '0,0,0';
   cell.alpha = 0.30 + 0.55 * Math.min(1, kind.pop / 100);
-  cell.windRad = windAngleRad(cell.wind);   // fall angle from this hour's wind speed
+  cell.windRad = precipSlantRad(cell.wind, cell.dir);   // fall slant from this hour's E/W wind component
   const areaScale = Math.max(0.45, Math.min(2.4, (w * h) / REF_AREA));
   cell.type = kind.snow ? 'snow' : (kind.level === 1 ? 'fog' : 'rain');
 
@@ -594,18 +634,47 @@ function buildParticles(cell){
   }
 }
 
+/* Grow the day/hour labels to the biggest type that fits their (fixed) header
+   boxes. Tracks are sized independently (in ch of the grid font), so changing
+   the label font here never reflows the grid — overflow:hidden clips any slop. */
+const DAY_LABEL_SCALE = 0.8, HOUR_LABEL_SCALE = 1.1;   // tuned fill ratios
+function fitHeaders(){
+  const portrait = orientation === 'p';
+  const CW = 0.62;                                  // approx glyph width / font-size
+  const dayEl = gridEl.querySelector('.head.day');
+  if (dayEl){
+    const w = dayEl.clientWidth, h = dayEl.clientHeight;
+    // portrait: one line "Fr19" (~4 glyphs); landscape: two stacked lines (~2 glyphs each)
+    const px = (portrait ? Math.min(h * 0.86, w / (4 * CW))
+                         : Math.min(h * 0.46, w / (2 * CW))) * DAY_LABEL_SCALE;
+    gridEl.style.setProperty('--dayfs', Math.max(7, Math.round(px)) + 'px');
+  }
+  const hourEl = gridEl.querySelector('.head.hour');
+  if (hourEl){
+    const w = hourEl.clientWidth, h = hourEl.clientHeight;
+    const len = clock24() ? 2 : 3;                  // "03" vs "12a"
+    const px = Math.min(h * 0.86, w / (len * CW)) * HOUR_LABEL_SCALE;
+    gridEl.style.setProperty('--hourfs', Math.max(7, Math.round(px)) + 'px');
+  }
+}
+
 function layoutFx(){
+  fitHeaders();
   if (!fx.canvas){
     fx.canvas = document.getElementById('fx');
     fx.ctx = fx.canvas.getContext('2d');
+    fx.wcanvas = document.getElementById('windfx');
+    fx.wctx = fx.wcanvas.getContext('2d');
   }
   const g = gridEl.getBoundingClientRect();
   fx.w = g.width; fx.h = g.height;
   fx.dpr = Math.min(1.5, window.devicePixelRatio || 1);   // fog fill-rate: 1.5 is plenty
-  Object.assign(fx.canvas.style, { left: `${g.left}px`, top: `${g.top}px`, width: `${g.width}px`, height: `${g.height}px` });
-  fx.canvas.width = Math.round(g.width * fx.dpr);
-  fx.canvas.height = Math.round(g.height * fx.dpr);
-  fx.ctx.setTransform(fx.dpr, 0, 0, fx.dpr, 0, 0);
+  for (const cv of [fx.canvas, fx.wcanvas]){               // both layers track the grid 1:1
+    Object.assign(cv.style, { left: `${g.left}px`, top: `${g.top}px`, width: `${g.width}px`, height: `${g.height}px` });
+    cv.width = Math.round(g.width * fx.dpr);               // (re)setting width also clears stale trails
+    cv.height = Math.round(g.height * fx.dpr);
+    cv.getContext('2d').setTransform(fx.dpr, 0, 0, fx.dpr, 0, 0);
+  }
   for (const cell of fx.cells){                           // measure cell rects
     const r = cell.el.getBoundingClientRect();
     cell.x = r.left - g.left; cell.y = r.top - g.top; cell.w = r.width; cell.h = r.height;
@@ -627,16 +696,48 @@ function layoutFx(){
   startFx();
 }
 
+/* Seed a windy cell with `n` filaments at random positions, each with its own
+   speed (scaled by the cell's wind) and a short life so the field keeps renewing
+   instead of settling into fixed tracks. */
+function buildFilaments(fc, n){
+  fc.wa = 0.10 + 0.22 * fc.wt;                  // base filament brightness, by wind
+  const v = windToward(fc.dir);                 // true flow direction (north = up); null dir → blows east
+  fc.fdx = fc.dir == null ? 1 : v.x; fc.fdy = fc.dir == null ? 0 : v.y;
+  const span = (fc.w + fc.h) / 2;               // direction-neutral travel scale
+  fc.parts = [];
+  for (let i = 0; i < n; i++){
+    const x = rand(0, fc.w), y = rand(0, fc.h), ml = rand(0.6, 1.7);
+    fc.parts.push({
+      x, y, px: x, py: y,
+      life: rand(0, ml), ml,
+      spd: span * (0.5 + 1.8 * fc.wt) * rand(0.8, 1.2),   // px/sec along the flow
+      lw:  rand(0.5, 1.0),
+    });
+  }
+}
+
 /* Measure ambient-effect cells and bucket them: hot + contiguous thunderstorm
-   groups (so a lightning flash stays contained within a single storm). */
+   groups (so a lightning flash stays contained within a single storm). Windy
+   cells get a filament count proportional to wind & area, capped by a global
+   budget so a fully-blustery week can't blow the per-frame stroke count up. */
 function layoutAmbient(g){
-  fx.hot = []; fx.thunder = [];
+  fx.hot = []; fx.thunder = []; fx.windy = [];
+  let windRaw = 0;
   for (const fc of fx.fxCells){
     const r = fc.el.getBoundingClientRect();
     fc.x = r.left - g.left; fc.y = r.top - g.top; fc.w = r.width; fc.h = r.height;
     if (fc.hot) fx.hot.push(fc);
     if (fc.thunder) fx.thunder.push(fc);
+    if (fc.windy){
+      fc.wt = windFrac(fc.wind);
+      const as = Math.max(0.45, Math.min(2.4, (fc.w * fc.h) / REF_AREA));
+      fc.wRaw = Math.max(2, Math.round((6 + 18 * fc.wt) * as));   // density: 6 (breezy) → 24 (howling)
+      windRaw += fc.wRaw;
+      fx.windy.push(fc);
+    }
   }
+  const wScale = windRaw > WIND_BUDGET ? WIND_BUDGET / windRaw : 1;
+  for (const fc of fx.windy) buildFilaments(fc, Math.max(1, Math.round(fc.wRaw * wScale)));
   // group contiguous thunderstorm cells (4-neighbour by di/h)
   fx.boltGroups = [];
   const seen = new Set(), byKey = new Map();
@@ -714,7 +815,51 @@ function drawCell(cell, dt, gust){
   ctx.restore();
 }
 
-/* ---------- Ambient effects (heat shimmer / shooting stars / lightning) ---------- */
+/* ---------- Wind field (its own persistent canvas) ----------
+ * hint.fm-style: many fine filaments comb across dry, windy cells in each cell's
+ * TRUE wind direction (north = top). We DON'T clear this canvas each frame —
+ * instead we erase a sliver of it (destination-out), so every filament smears
+ * into a soft trailing wisp. That persistence is why it gets its own buffer
+ * (the precip canvas hard-clears). */
+function drawWindField(dt, gust){
+  const ctx = fx.wctx;
+  if (!ctx) return;
+  ctx.globalCompositeOperation = 'destination-out';     // fade prior frame → trailing wisps
+  ctx.fillStyle = `rgba(0,0,0,${WIND_FADE})`;
+  ctx.fillRect(0, 0, fx.w, fx.h);
+  ctx.globalCompositeOperation = 'source-over';
+  if (!fx.windy || !fx.windy.length) return;
+  const cg = Math.cos(gust), sg = Math.sin(gust);       // shared gust = small rotational wobble of the flow
+  ctx.lineCap = 'round';
+  for (const fc of fx.windy){
+    const dx = fc.fdx * cg - fc.fdy * sg;               // this cell's flow, nudged by the gust
+    const dy = fc.fdx * sg + fc.fdy * cg;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(fc.x, fc.y, fc.w, fc.h); ctx.clip();
+    for (const p of fc.parts){
+      p.px = p.x; p.py = p.y;
+      p.x += dx * p.spd * dt; p.y += dy * p.spd * dt;
+      p.life -= dt;
+      if (p.life <= 0 || p.x < -4 || p.x > fc.w + 4 || p.y < -4 || p.y > fc.h + 4){   // spent or off any edge → respawn
+        const nx = rand(0, fc.w), ny = rand(0, fc.h);
+        p.x = p.px = nx; p.y = p.py = ny; p.life = p.ml;
+        continue;                                        // skip the streak across the cell on respawn
+      }
+      const lf = Math.min(1, p.life * 5, (p.ml - p.life) * 5);   // fade each filament in/out over its life
+      const a = fc.wa * lf;
+      if (a < 0.004) continue;
+      ctx.beginPath();
+      ctx.lineWidth = p.lw;
+      ctx.strokeStyle = `rgba(248,250,255,${a.toFixed(3)})`;
+      ctx.moveTo(fc.x + p.px, fc.y + p.py);
+      ctx.lineTo(fc.x + p.x, fc.y + p.y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+/* ---------- Ambient effects (heat shimmer / lightning) ---------- */
 function drawHeatShimmer(){
   if (!fx.hot.length) return;
   const ctx = fx.ctx;
@@ -771,14 +916,16 @@ function frame(now){
   fx.ctx.clearRect(0, 0, fx.w, fx.h);
   const gust = (6 * Math.sin(fx.t * 0.5)) * Math.PI / 180;   // ±6° shared gust wobble
   for (const cell of fx.cells) drawCell(cell, dt, gust);
+  drawWindField(dt, gust);                                   // persistent wind layer (its own canvas)
   drawAmbient(now);
   fx.raf = requestAnimationFrame(frame);
 }
 
 function startFx(){
   cancelAnimationFrame(fx.raf); fx.raf = 0;
+  fx.wctx?.clearRect(0, 0, fx.w, fx.h);                 // drop any leftover wind trails before (re)starting
   if (!fx.cells.length && !fx.fxCells.length){ fx.ctx?.clearRect(0, 0, fx.w, fx.h); return; }
-  if (reduceMotion.matches){             // one calm static frame, no loop
+  if (reduceMotion.matches){             // one calm static frame, no loop (wind needs motion → omitted)
     fx.ctx.clearRect(0, 0, fx.w, fx.h);
     fx.t = 1;
     for (const cell of fx.cells) drawCell(cell, 0, 0);   // static frame; wind tilt still applies
@@ -882,6 +1029,8 @@ function showTip(di, h, el){
   }
   tipEl.innerHTML = head + bits.join(' ') + why;
   tipEl.classList.toggle('top', orientation === 'p');   // portrait: sit over the wee hours
+  const cellH = gridEl.querySelector('.cell:not(.empty)')?.getBoundingClientRect().height || 0;
+  tipEl.style.setProperty('--tip-shift', Math.round(cellH) + 'px');   // nudge up one rectangle
   tipEl.hidden = false;
   clearTimeout(tipTimer);
   tipTimer = setTimeout(hideTip, 3200);
@@ -1032,6 +1181,101 @@ $('#aboutBack').addEventListener('click', () => { aboutEl.hidden = true; sheetEl
 aboutEl.addEventListener('click', e => { if (e.target.dataset.aclose !== undefined) aboutEl.hidden = true; });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !aboutEl.hidden) aboutEl.hidden = true; });
 
+/* ---------- First-run coach marks (shown once) ---------- */
+const coachEl = $('#coach');
+function closeCoach(){ coachEl.hidden = true; try { localStorage.setItem(LS.coach, '1'); } catch {} }
+$('#coachGot').addEventListener('click', closeCoach);
+$('#coachMore').addEventListener('click', () => { closeCoach(); aboutEl.hidden = false; });
+coachEl.addEventListener('click', e => { if (e.target.dataset.coachclose !== undefined) closeCoach(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !coachEl.hidden) closeCoach(); });
+(function maybeShowCoach(){
+  let seen = false; try { seen = localStorage.getItem(LS.coach) === '1'; } catch {}
+  if (!seen) coachEl.hidden = false;                  // appears over the first (placeholder) paint
+})();
+
+/* ---------- Swipe a sheet down to dismiss it, like a drawer ---------- */
+function enableSheetSwipe(card, onClose){
+  if (!card) return;
+  // Don't hijack drags that begin on something interactive (buttons, the city
+  // search, the Run Index drag-points) — those need the gesture for themselves.
+  const IGNORE = 'input,textarea,button,.seg,#runDims,.results,.placelist,a';
+  const CLOSE_PX = 90, FLICK = 0.5;     // dismiss past 90px, or on a quick flick
+  let startY = 0, startScroll = 0, startT = 0, dy = 0, dragging = false, tracking = false;
+
+  const reset = () => { card.style.transition = ''; card.style.transform = ''; card.style.opacity = ''; };
+
+  card.addEventListener('touchstart', e => {
+    if (e.touches.length !== 1 || e.target.closest(IGNORE)) { tracking = false; return; }
+    startY = e.touches[0].clientY; startScroll = card.scrollTop; startT = e.timeStamp;
+    dy = 0; dragging = false; tracking = true;
+  }, { passive: true });
+
+  card.addEventListener('touchmove', e => {
+    if (!tracking) return;
+    const delta = e.touches[0].clientY - startY;
+    if (!dragging){
+      // engage only when pulling down from the very top of the scroll area
+      if (delta > 6 && card.scrollTop <= 0 && startScroll <= 0){ dragging = true; card.style.transition = 'none'; }
+      else if (delta < 0 || card.scrollTop > 0){ tracking = false; return; }   // it's a scroll
+      else return;
+    }
+    dy = Math.max(0, delta);
+    e.preventDefault();                 // stop the page/card from scrolling while we drag
+    card.style.transform = `translate(-50%, ${dy}px)`;
+    card.style.opacity = String(Math.max(0.4, 1 - dy / 600));
+  }, { passive: false });
+
+  const finish = e => {
+    if (!tracking) return;
+    const wasDrag = dragging; tracking = false; dragging = false;
+    const vel = dy / ((e.timeStamp - startT) || 1);
+    if (wasDrag && (dy > CLOSE_PX || vel > FLICK)){
+      card.style.transition = 'transform .2s ease, opacity .2s ease';
+      card.style.transform = `translate(-50%, ${card.offsetHeight}px)`;
+      card.style.opacity = '0';
+      setTimeout(() => { onClose(); reset(); }, 200);
+    } else if (wasDrag){
+      card.style.transition = 'transform .2s ease, opacity .2s ease';
+      card.style.transform = ''; card.style.opacity = '';
+      setTimeout(() => { card.style.transition = ''; }, 200);
+    }
+  };
+  card.addEventListener('touchend', finish);
+  card.addEventListener('touchcancel', finish);
+}
+enableSheetSwipe(sheetEl.querySelector('.sheet-card'), closeSheet);
+enableSheetSwipe(runEditorEl.querySelector('.sheet-card'), closeRunEditor);
+enableSheetSwipe(aboutEl.querySelector('.sheet-card'), () => { aboutEl.hidden = true; });
+
+/* ---------- "Install as an app" tip ---------- */
+(() => {
+  const tip = $('#installTip'), link = $('#installLink'), hint = $('#installHint');
+  if (!tip) return;
+  const installed = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  if (installed){ tip.hidden = true; return; }   // already running fullscreen — nothing to suggest
+
+  let deferred = null;   // Chrome/Edge/Android fire this; we trigger it on click
+  addEventListener('beforeinstallprompt', e => { e.preventDefault(); deferred = e; });
+  addEventListener('appinstalled', () => { tip.hidden = true; });
+
+  const isiOS = /iphone|ipad|ipod/i.test(navigator.userAgent) ||
+                (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+  link.addEventListener('click', async e => {
+    e.preventDefault();
+    if (deferred){                       // native install prompt available
+      deferred.prompt();
+      await deferred.userChoice;
+      deferred = null;
+    } else {                             // no programmatic install (iOS Safari, etc.) — show how
+      hint.hidden = false;
+      hint.textContent = isiOS
+        ? ' Tap the Share button, then “Add to Home Screen.”'
+        : ' Open your browser menu and choose “Install” or “Add to Home Screen.”';
+    }
+  });
+})();
+
 /* ---------- Location: geolocation + Open-Meteo geocoding ---------- */
 function setPlace(name, sub){ place = { name, sub: sub || '' }; if (!sheetEl.hidden) syncSheet(); }
 
@@ -1107,7 +1351,7 @@ function generateTestForecast(){
   const dKey = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   const hKey = d => `${dKey(d)}T${pad(d.getHours())}:00`;
 
-  const hourly = { time: [], temperature_2m: [], precipitation_probability: [], precipitation: [], snowfall: [], apparent_temperature: [], dewpoint_2m: [], relative_humidity_2m: [], wind_speed_10m: [], cloud_cover: [], weather_code: [] };
+  const hourly = { time: [], temperature_2m: [], precipitation_probability: [], precipitation: [], snowfall: [], apparent_temperature: [], dewpoint_2m: [], relative_humidity_2m: [], wind_speed_10m: [], wind_direction_10m: [], cloud_cover: [], weather_code: [] };
   const daily = { time: [], sunrise: [], sunset: [] };
   const start = new Date(); start.setHours(0, 0, 0, 0);
 
@@ -1123,8 +1367,10 @@ function generateTestForecast(){
     const amp = rand(4, 9);                  // diurnal swing
     const wet = Math.random() < 0.6;
     const thunder = wet && dayMeanC > 12 && Math.random() < 0.5;   // warm + wet day may storm
+    const icy = wet && dayMeanC > -5 && dayMeanC < 2 && Math.random() < 0.5;   // near-freezing wet day → freezing rain
     const stormH = rand(0, 23), stormW = rand(2, 8), peakMm = rand(0.2, 4);
     const windBase = rand(2, 14), windGust = rand(0, 26), windPhase = rand(0, 6.28);
+    const dirBase = rand(0, 360), dirDrift = rand(-40, 40);   // a slowly-veering wind direction across the day
     for (let h = 0; h < 24; h++){
       const t = new Date(d0.getTime() + h * 3600000);
       hourly.time.push(hKey(t));
@@ -1139,13 +1385,14 @@ function generateTestForecast(){
         mm = peakMm * g * rand(0.4, 1.2);
         pop = Math.round(cl(40 + g * 60 + rand(-12, 12), 0, 100));
       }
-      const snow = (tempC <= 0.5 && mm > 0) ? mm * rand(0.6, 1) : 0;
+      const snow = (!icy && tempC <= 0.5 && mm > 0) ? mm * rand(0.6, 1) : 0;   // icy days fall as freezing rain, not snow
       hourly.precipitation.push(r2(mm));
       hourly.snowfall.push(r2(snow));
       hourly.precipitation_probability.push(pop);
 
       const wind = cl(windBase + windGust * Math.max(0, Math.sin(h / 24 * 6.28 + windPhase)) * rand(0.4, 1) + rand(-2, 2), 0, 52);
       hourly.wind_speed_10m.push(r1(wind));
+      hourly.wind_direction_10m.push(Math.round(((dirBase + dirDrift * (h / 23) + rand(-12, 12)) % 360 + 360) % 360));
 
       const rh = Math.round(cl(55 + (wet ? 18 : 0) + rand(-28, 28), 12, 100));
       hourly.relative_humidity_2m.push(rh);
@@ -1157,7 +1404,7 @@ function generateTestForecast(){
       hourly.cloud_cover.push(Math.round(cl(g * 90 + (wet ? 25 : 0) + rand(-18, 18), 0, 100)));
       // weather code: thunderstorm at a wet day's core, else rough sky/precip class
       let wc = 0;
-      if (mm > 0.05) wc = snow > 0 ? 73 : (thunder && g > 0.72 ? 95 : (mm > 0.4 ? 65 : 61));
+      if (mm > 0.05) wc = icy ? (mm > 0.4 ? 67 : 66) : (snow > 0 ? 73 : (thunder && g > 0.72 ? 95 : (mm > 0.4 ? 65 : 61)));
       else wc = hourly.cloud_cover[hourly.cloud_cover.length - 1] > 60 ? 3 : (hourly.cloud_cover[hourly.cloud_cover.length - 1] > 25 ? 2 : 0);
       hourly.weather_code.push(wc);
     }

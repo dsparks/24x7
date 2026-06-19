@@ -13,10 +13,18 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="24×7" />
   <link rel="stylesheet" href="styles.css" />
+  <!-- Warm up the weather hosts so the forecast fetch starts sooner (perceived load). -->
+  <link rel="preconnect" href="https://api.open-meteo.com" crossorigin />
+  <link rel="preconnect" href="https://geocoding-api.open-meteo.com" crossorigin />
+  <!-- Download app.js in parallel with head parsing; execute after DOM is ready. -->
+  <script src="app.js" defer></script>
 </head>
 <body>
   <!-- Full-bleed grid lives here; built by app.js -->
   <div id="grid" class="grid" aria-label="Hourly weather grid"></div>
+
+  <!-- Wind filaments (persistent, trailing) — drawn under the precip layer -->
+  <canvas id="windfx" class="fx" aria-hidden="true"></canvas>
 
   <!-- Precipitation particle layer, drawn over the grid -->
   <canvas id="fx" class="fx" aria-hidden="true"></canvas>
@@ -29,6 +37,25 @@
     <span class="lo"></span>
     <div class="bar"></div>
     <span class="hi"></span>
+  </div>
+
+  <!-- First-run coach marks (shown once, over the real grid) -->
+  <div id="coach" class="coach" hidden>
+    <div class="coach-bg" data-coachclose></div>
+    <div class="coach-gear" aria-hidden="true">⤡ <b>Settings</b> live in this corner</div>
+    <div class="coach-center" role="dialog" aria-modal="true" aria-label="Welcome to 24×7">
+      <div class="coach-head">
+        <h1 class="coach-title">Welcome to 24×7</h1>
+        <p class="coach-sub">One week’s forecast, in 168 rectangles.</p>
+      </div>
+      <p class="coach-tap"><b>Tap</b> any square for that hour’s temperature, rain, and wind forecast.</p>
+      <p class="coach-swipe"><span class="sw-arrows" aria-hidden="true">⇆</span> <b>Swipe</b> left or right to switch <b>Temp ⇄ Run Index</b>.</p>
+      <p class="coach-hold"><b>Press &amp; hold</b> anywhere to flash the color legend.</p>
+      <div class="coach-actions">
+        <button type="button" class="btn" id="coachGot">Got it</button>
+        <button type="button" class="btn linkbtn" id="coachMore">More tips ›</button>
+      </div>
+    </div>
   </div>
 
   <!-- Settings sheet -->
@@ -145,6 +172,7 @@
 
         <h2 class="about-h">Tips</h2>
         <ul class="about-tips">
+          <li id="installTip"><b>24×7 looks best in fullscreen!</b> I recommend <a href="#" id="installLink">installing it as an app</a> to get 168 beautiful rectangles, and nothing else.<span id="installHint" class="install-hint" hidden></span></li>
           <li><b>Tap a square</b> to see that hour’s details — temperature, chance of rain, and wind.</li>
           <li><b>Swipe left or right</b> to switch between Temperature and the Run Index: a 0–100 score for how good each hour is to be outside. Tune what “good” means under Settings → Customize Run Index.</li>
           <li><b>Press and hold</b> anywhere to pop up the color scale.</li>
@@ -156,6 +184,5 @@
     </div>
   </div>
 
-  <script src="app.js"></script>
 </body>
 </html>

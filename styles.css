@@ -57,14 +57,16 @@ body{
 .head{
   display:flex;align-items:center;justify-content:center;
   background:var(--bg);color:var(--muted);
-  font-size:clamp(8px,1.7vmin,13px);
-  line-height:1.05;text-align:center;overflow:hidden;
+  line-height:1;text-align:center;overflow:hidden;
 }
-.head.day{flex-direction:column;gap:.05em;font-weight:600}
+/* font-size is measured to fill the box by fitHeaders(); clamp is the pre-paint fallback */
+.head.day{font-weight:600;white-space:nowrap;font-size:var(--dayfs,clamp(8px,1.7vmin,13px))}
+.grid.p .head.day{flex-direction:row;gap:.06em}    /* portrait: days are wide cols → Fr19 on one line */
+.grid.l .head.day{flex-direction:column;gap:0}      /* landscape: days are tall rows → Fr over 19 */
 .head.day .dow{color:var(--ink)}
 .head.day .dnum{color:var(--muted);font-weight:500}
 .head.today .dow,.head.today .dnum{color:#ffd23f}
-.head.hour{font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.head.hour{font-variant-numeric:tabular-nums;letter-spacing:-.02em;white-space:nowrap;font-size:var(--hourfs,clamp(8px,1.7vmin,13px))}
 
 /* cells */
 .cell{
@@ -112,7 +114,7 @@ body{
 /* ---------- Tap readout ---------- */
 .tip{
   position:fixed;z-index:40;
-  left:50%;bottom:max(14px,env(safe-area-inset-bottom));
+  left:50%;bottom:calc(max(14px,env(safe-area-inset-bottom)) + var(--tip-shift,0px));
   transform:translateX(-50%);
   background:rgba(17,21,28,.96);
   color:var(--ink);
@@ -127,7 +129,7 @@ body{
   text-align:center;
 }
 /* portrait: float over the wee-hours rows (top) instead of the relevant evening rows */
-.tip.top{bottom:auto;top:clamp(64px,11vh,150px)}
+.tip.top{bottom:auto;top:calc(clamp(64px,11vh,150px) - var(--tip-shift,0px))}
 .tip b{font-weight:700}
 .tip .tip-place{display:block;font-size:.82em;color:var(--muted);margin-bottom:2px;font-weight:600}
 .tip .tip-why{display:block;margin-top:6px;padding-top:6px;border-top:1px solid var(--line);font-size:.78em;line-height:1.5;color:var(--muted);text-align:left;font-variant-numeric:tabular-nums}
@@ -148,6 +150,30 @@ body{
 .legend .bar{width:min(46vw,180px);height:10px;border-radius:6px;border:1px solid rgba(255,255,255,.15)}
 .legend .lo,.legend .hi{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
 
+/* ---------- First-run coach marks ---------- */
+.coach{position:fixed;inset:0;z-index:60;color:var(--ink);animation:coachIn .25s ease}
+.coach[hidden]{display:none}
+@keyframes coachIn{from{opacity:0}to{opacity:1}}
+.coach-bg{position:absolute;inset:0;background:rgba(6,8,12,.74);backdrop-filter:blur(2px)}
+/* points at the gear in the top-left corner, where the headers meet */
+.coach-gear{position:absolute;top:max(10px,env(safe-area-inset-top));left:14px;font-size:.95rem;color:var(--muted)}
+.coach-gear b{color:#7fb0ff;font-weight:700}
+.coach-center{
+  position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+  width:min(360px,86vw);display:flex;flex-direction:column;gap:1.4rem;text-align:center;
+}
+.coach-head{display:flex;flex-direction:column;gap:.25rem}
+.coach-title{margin:0;font-size:1.5rem;font-weight:700;letter-spacing:.5px;color:var(--ink)}
+.coach-sub{font-size:.95rem;color:var(--muted)}
+.coach-center p{margin:0;font-size:1rem;line-height:1.5;color:var(--muted)}
+.coach-center b{color:var(--ink);font-weight:700}
+.coach-swipe{color:var(--ink)!important}
+.sw-arrows{display:inline-block;font-size:1.5rem;color:#7fb0ff;animation:swWig 1.4s ease-in-out infinite}
+@keyframes swWig{0%,100%{transform:translateX(-7px)}50%{transform:translateX(7px)}}
+.coach-actions{display:flex;gap:.6rem;align-items:center;justify-content:center;margin-top:.4rem}
+.coach-actions .btn{width:auto;padding:.55rem 1.1rem}
+.coach-actions .linkbtn{margin-top:0;width:auto;border:0}
+
 /* ---------- Settings sheet ---------- */
 .sheet{position:fixed;inset:0;z-index:50}
 .sheet[hidden]{display:none}
@@ -163,6 +189,11 @@ body{
   padding:calc(14px + env(safe-area-inset-top)) 18px calc(18px + env(safe-area-inset-bottom));
   box-shadow:0 -20px 60px rgba(0,0,0,.5);
   animation:rise .22s ease;
+}
+/* drawer grab-handle — hints that the sheet can be swiped down to dismiss */
+.sheet-card::before{
+  content:"";display:block;width:38px;height:4px;border-radius:999px;
+  background:rgba(255,255,255,.22);margin:-2px auto 12px;
 }
 @keyframes rise{from{transform:translate(-50%,18px);opacity:.4}to{transform:translate(-50%,0);opacity:1}}
 .sheet-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:.6rem}
@@ -220,6 +251,8 @@ body{
 .about-tips li{position:relative;padding-left:1.1rem;color:var(--muted);font-size:.92rem;line-height:1.5}
 .about-tips li::before{content:"";position:absolute;left:.15rem;top:.6em;width:5px;height:5px;border-radius:50%;background:#2b7fff}
 .about-tips li b{color:var(--ink);font-weight:600}
+.about-tips a{color:#7fb0ff;text-decoration:underline;text-underline-offset:2px}
+.install-hint{display:block;margin-top:.35rem;font-size:.85em;opacity:.85}
 .about-foot{color:var(--muted);font-size:.8rem;line-height:1.45;margin:1.4rem 0 0;opacity:.85}
 
 .rdim{margin-bottom:1.15rem}
