@@ -1,0 +1,10 @@
+# Claude Code local config (keep on disk, never publish)
+.claude/
+
+# Editor / atomic-write temp files
+*.tmp.*
+
+# OS junk
+Thumbs.db
+desktop.ini
+.DS_Store
