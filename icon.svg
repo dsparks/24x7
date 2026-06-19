@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#0b0e14"/>
+  <g>
+    <!-- 4×4 heatmap motif using NOAA-ramp colors -->
+    <!-- row 0 -->
+    <rect x="96"  y="96"  width="74" height="74" rx="8" fill="#3b93ff"/>
+    <rect x="178" y="96"  width="74" height="74" rx="8" fill="#17fff0"/>
+    <rect x="260" y="96"  width="74" height="74" rx="8" fill="#30ff87"/>
+    <rect x="342" y="96"  width="74" height="74" rx="8" fill="#77ff00"/>
+    <!-- row 1 -->
+    <rect x="96"  y="178" width="74" height="74" rx="8" fill="#17fff0"/>
+    <rect x="178" y="178" width="74" height="74" rx="8" fill="#30ff87"/>
+    <rect x="260" y="178" width="74" height="74" rx="8" fill="#ddff00"/>
+    <rect x="342" y="178" width="74" height="74" rx="8" fill="#ffd900"/>
+    <!-- row 2 -->
+    <rect x="96"  y="260" width="74" height="74" rx="8" fill="#30ff87"/>
+    <rect x="178" y="260" width="74" height="74" rx="8" fill="#ddff00"/>
+    <rect x="260" y="260" width="74" height="74" rx="8" fill="#ffb300"/>
+    <rect x="342" y="260" width="74" height="74" rx="8" fill="#f97600"/>
+    <!-- row 3 -->
+    <rect x="96"  y="342" width="74" height="74" rx="8" fill="#ffd900"/>
+    <rect x="178" y="342" width="74" height="74" rx="8" fill="#ffb300"/>
+    <rect x="260" y="342" width="74" height="74" rx="8" fill="#f97600"/>
+    <rect x="342" y="342" width="74" height="74" rx="8" fill="#dc2626"/>
+  </g>
+</svg>

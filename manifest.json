@@ -1,0 +1,14 @@
+{
+  "name": "24×7 — Weather Grid",
+  "short_name": "24×7",
+  "description": "Your week of weather, one screen. Hourly temperature + precipitation grid.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0b0e14",
+  "theme_color": "#0b0e14",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

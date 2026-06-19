@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>24×7</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
+  <meta name="description" content="Your week of weather, one screen. A 24×7 hourly temperature and rain grid." />
+  <meta name="theme-color" content="#0b0e14" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icon.svg" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="24×7" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Full-bleed grid lives here; built by app.js -->
+  <div id="grid" class="grid" aria-label="Hourly weather grid"></div>
+
+  <!-- Precipitation particle layer, drawn over the grid -->
+  <canvas id="fx" class="fx" aria-hidden="true"></canvas>
+
+  <!-- Tap-a-cell readout -->
+  <div id="tip" class="tip" role="status" aria-live="polite" hidden></div>
+
+  <!-- Color legend (shows on palette/view change and long-press) -->
+  <div id="legend" class="legend" aria-hidden="true" hidden>
+    <span class="lo"></span>
+    <div class="bar"></div>
+    <span class="hi"></span>
+  </div>
+
+  <!-- Settings sheet -->
+  <div id="settings" class="sheet" hidden>
+    <div class="sheet-backdrop" data-close></div>
+    <div class="sheet-card" role="dialog" aria-modal="true" aria-label="Settings">
+      <header class="sheet-head">
+        <h1 id="appName">24×7</h1>
+        <button class="x" type="button" data-close aria-label="Close settings">✕</button>
+      </header>
+
+      <div class="sheet-body">
+        <div class="place-row">
+          <div>
+            <div class="place" id="placeName">—</div>
+            <div class="place-sub" id="placeSub">Locating…</div>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Locations</label>
+          <div id="placeList" class="placelist"></div>
+          <form id="searchForm" autocomplete="off">
+            <div class="search-row">
+              <input id="searchInput" type="text" placeholder="Add a city…" aria-label="Add a location" />
+              <button type="submit" class="btn">Add</button>
+            </div>
+            <ul id="searchResults" class="results" hidden></ul>
+          </form>
+        </div>
+
+        <div class="field">
+          <label>View</label>
+          <div class="seg" data-setting="view">
+            <button type="button" data-value="temp">Temp / Rain</button>
+            <button type="button" data-value="run">Run Index</button>
+          </div>
+          <button type="button" class="btn linkbtn" id="runEditBtn">Customize Run Index…</button>
+        </div>
+
+        <div class="field">
+          <label>Temperature units</label>
+          <div class="seg" data-setting="unit">
+            <button type="button" data-value="auto">Auto</button>
+            <button type="button" data-value="f">°F</button>
+            <button type="button" data-value="c">°C</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Clock</label>
+          <div class="seg" data-setting="clock">
+            <button type="button" data-value="auto">Auto</button>
+            <button type="button" data-value="12">12h</button>
+            <button type="button" data-value="24">24h</button>
+          </div>
+        </div>
+
+        <div class="field" data-temp-only>
+          <label>Temperature palette</label>
+          <div class="seg" data-setting="palette">
+            <button type="button" data-value="noaa">NOAA</button>
+            <button type="button" data-value="inferno">Inferno</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <label id="numbersLabel">Show temperature numbers</label>
+          <div class="seg" data-setting="showNumbers">
+            <button type="button" data-value="true">On</button>
+            <button type="button" data-value="false">Off</button>
+          </div>
+        </div>
+
+        <button type="button" class="btn linkbtn" id="aboutBtn">How to use &amp; tips</button>
+      </div>
+
+      <footer class="sheet-foot">
+        <span id="updatedAt">—</span>
+        <span class="dot">·</span>
+        <span>Data: Open-Meteo</span>
+      </footer>
+    </div>
+  </div>
+
+  <!-- Run Index curve editor -->
+  <div id="runEditor" class="sheet" hidden>
+    <div class="sheet-backdrop" data-rclose></div>
+    <div class="sheet-card" role="dialog" aria-modal="true" aria-label="Customize Run Index">
+      <header class="sheet-head">
+        <button class="back" type="button" id="runBack" aria-label="Back to settings">‹</button>
+        <h1>Run Index</h1>
+        <button class="x" type="button" data-rclose aria-label="Close">✕</button>
+      </header>
+      <div class="sheet-body">
+        <p class="hint">Drag each point up for better running weather, down for worse. The hourly score is the geometric mean across every dimension — so any one “avoid” sinks it.</p>
+        <div id="runDims"></div>
+        <button type="button" class="btn" id="runReset">Reset to defaults</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- How to use / about -->
+  <div id="aboutSheet" class="sheet" hidden>
+    <div class="sheet-backdrop" data-aclose></div>
+    <div class="sheet-card" role="dialog" aria-modal="true" aria-label="How to use">
+      <header class="sheet-head">
+        <button class="back" type="button" id="aboutBack" aria-label="Back to settings">‹</button>
+        <h1>How to use</h1>
+        <button class="x" type="button" data-aclose aria-label="Close">✕</button>
+      </header>
+      <div class="sheet-body">
+        <p class="about-intro"><b>24×7</b> puts a whole week of weather on one screen! Each square is a single hour, colored by temperature, with indications for expected weather. I’ve tried to make this as simple as possible, while making the details available and giving you a lot of options for customization.</p>
+
+        <h2 class="about-h">Tips</h2>
+        <ul class="about-tips">
+          <li><b>Tap a square</b> to see that hour’s details — temperature, chance of rain, and wind.</li>
+          <li><b>Swipe left or right</b> to switch between Temperature and the Run Index: a 0–100 score for how good each hour is to be outside. Tune what “good” means under Settings → Customize Run Index.</li>
+          <li><b>Press and hold</b> anywhere to pop up the color scale.</li>
+          <li><b>Save your places</b> — search any city in Settings and switch between them with a tap, or let “My location” follow you around.</li>
+        </ul>
+
+        <p class="about-foot">Forecast from Open-Meteo. Everything lives on your device — no account, no tracking.</p>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
