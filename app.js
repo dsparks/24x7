@@ -30,15 +30,15 @@ const DEFAULTS = {
  * while everything "fine" lands mid-scale. def[] are the 0–1 starting points. */
 const RUN_DIMS = [
   { key: 'temp', label: 'Temperature', unit: '°F', min: 0, max: 100, step: 10,
-    value: c => cToF(c.c), def: [0, 0, 0, .5, .5, 1, 1, 1, .5, .5, 0] },
+    value: c => cToF(c.c), def: [0, 0, 0, 1/6, 4/6, 1, 1, 5/6, 3/6, 1/6, 0] },
   { key: 'dew', label: 'Dew point', unit: '°F', min: 30, max: 80, step: 5,
-    value: c => c.dewF, def: [1, 1, 1, 1, .9, .75, .55, .35, .2, .1, 0] },
+    value: c => c.dewF, def: [1, 1, 1, 1, 1, 5/6, 4/6, 3/6, 2/6, 1/6, 0] },
   { key: 'wind', label: 'Wind speed', unit: 'mph', min: 0, max: 40, step: 5,
-    value: c => c.windMph, def: [1, 1, .8, .6, .4, .3, .2, .1, 0] },
+    value: c => c.windMph, def: [1, 1, 5/6, 4/6, 2/6, 2/6, 1/6, 1/6, 0] },
   { key: 'pop', label: 'Precip chance', unit: '%', min: 0, max: 100, step: 10,
-    value: c => c.pop, def: [1, 1, .9, .7, .5, .4, .3, .2, .15, .1, 0] },
+    value: c => c.pop, def: [1, 1, 1, 4/6, 3/6, 2/6, 2/6, 1/6, 1/6, 1/6, 0] },
   { key: 'intensity', label: 'Precip intensity', unit: '', min: 0, max: 5, step: 1,
-    value: c => precipLevel(c), def: [1, .8, .55, .35, .15, 0],
+    value: c => precipLevel(c), def: [1, 5/6, 1/6, 1/6, 1/6, 0],
     ticks: ['none', 'mist', 'driz', 'light', 'mod', 'heavy'] },
 ];
 const dimPoints = d => (d.max - d.min) / d.step + 1;
