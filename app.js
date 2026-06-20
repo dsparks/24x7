@@ -1649,6 +1649,42 @@ function choose(i){
 }
 function resetSearch(){ searchInput.value = ''; searchClear.hidden = true; closeResults(); }
 
+/* Soft re-ranking of geocoder hits. All weights are ADDITIVE nudges on top of the
+   API's own relevance order — nothing is filtered out, things just surface sooner.
+   Tweak these freely: bigger number = stronger pull to the top. */
+const RANK = {
+  apiOrderPenalty: 0.6,   // cost per step down the API's original order (keeps its relevance as a baseline)
+  exactName:       6,     // result name exactly equals the query
+  prefixName:      3,     // result name starts with the query
+  popMax:          5,     // cap on the population boost (log-scaled: 10k→+1, 100k→+2, 1M→+4, 10M→+5)
+  usBias:          2.5,   // extra weight for US results (soft, not a hard filter)
+  usLocaleBonus:   1.0,   // a little more US weight when the device locale is US
+  proxMax:         3,     // max boost for a result right on top of you
+  proxDecayKm:     1500,  // distance at which the proximity boost falls to ~37%
+};
+function haversineKm(aLat, aLon, bLat, bLon){
+  const R = 6371, toR = d => d * Math.PI / 180;
+  const dLat = toR(bLat - aLat), dLon = toR(bLon - aLon);
+  const s = Math.sin(dLat / 2) ** 2 + Math.cos(toR(aLat)) * Math.cos(toR(bLat)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(s));
+}
+function rankHits(items, q, ref){
+  const ql = q.toLowerCase();
+  const usW = RANK.usBias + (usLocale() ? RANK.usLocaleBonus : 0);
+  return items.map((r, i) => {
+    let s = -i * RANK.apiOrderPenalty;
+    const nl = (r.name || '').toLowerCase();
+    if (nl === ql) s += RANK.exactName;
+    else if (nl.startsWith(ql)) s += RANK.prefixName;
+    if (r.population > 0) s += Math.max(0, Math.min(RANK.popMax, Math.log10(r.population) - 2));
+    if (r.country_code === 'US') s += usW;
+    if (ref && r.latitude != null && r.longitude != null){
+      s += RANK.proxMax * Math.exp(-haversineKm(ref.lat, ref.lon, r.latitude, r.longitude) / RANK.proxDecayKm);
+    }
+    return { r, s, i };
+  }).sort((a, b) => b.s - a.s || a.i - b.i).map(x => x.r);
+}
+
 async function runSearch(q){
   const seq = ++searchSeq;
   searchAbort?.abort();
@@ -1658,7 +1694,7 @@ async function runSearch(q){
     const res = await geocode(q, searchAbort.signal);
     if (seq !== searchSeq) return;                 // a newer query superseded us
     if (!res.length) return showMsg('No matches');
-    renderHits(res, q);
+    renderHits(rankHits(res, q, lastCoords), q);   // soft re-rank: closeness + US + population
   } catch (err) {
     if (err.name === 'AbortError' || seq !== searchSeq) return;
     showMsg('Search error — try again');

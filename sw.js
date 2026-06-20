@@ -2,7 +2,7 @@
  * Cache-first for the app's own files so it launches instantly offline.
  * Weather API calls are never cached here; the app keeps its last forecast in
  * localStorage and repaints from that on load. */
-const CACHE = 'grid-v32';
+const CACHE = 'grid-v34';
 const SHELL = [
   '.', 'index.html', 'styles.css', 'app.js', 'manifest.json', 'icon.svg',
 ];
@@ -22,6 +22,15 @@ self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
+
+  // Ebb (sibling prototype) → network-first so edits show immediately; cache as offline fallback.
+  if (url.origin === location.origin && url.pathname.includes('ebb.')) {
+    e.respondWith(
+      fetch(req).then(res => { const copy = res.clone(); caches.open(CACHE).then(c => c.put(req, copy)).catch(() => {}); return res; })
+        .catch(() => caches.match(req))
+    );
+    return;
+  }
 
   // Same-origin app shell → cache-first, fall back to network and cache it.
   if (url.origin === location.origin) {

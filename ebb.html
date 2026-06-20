@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Ebb</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
+  <meta name="description" content="A week of fishing conditions, one screen. Tide, wind, and sky as an ocean cutaway." />
+  <meta name="theme-color" content="#05070c" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Ebb" />
+  <link rel="stylesheet" href="ebb.css" />
+  <link rel="preconnect" href="https://api.open-meteo.com" crossorigin />
+  <link rel="preconnect" href="https://geocoding-api.open-meteo.com" crossorigin />
+  <link rel="preconnect" href="https://api.tidesandcurrents.noaa.gov" crossorigin />
+  <script src="ebb.js" defer></script>
+</head>
+<body>
+  <!-- Cutaway grid: each cell is a slice of ocean (black water) + sky -->
+  <div id="grid" class="grid" aria-label="Hourly fishing-conditions grid"></div>
+
+  <!-- Animated overlay: chop, precip, stars, now-line -->
+  <canvas id="fx" class="fx" aria-hidden="true"></canvas>
+
+  <!-- Tap-a-cell readout -->
+  <div id="tip" class="tip" role="status" aria-live="polite" hidden></div>
+
+  <!-- Settings sheet -->
+  <div id="settings" class="sheet" hidden>
+    <div class="sheet-backdrop" data-close></div>
+    <div class="sheet-card" role="dialog" aria-modal="true" aria-label="Settings">
+      <header class="sheet-head">
+        <h1>Ebb</h1>
+        <button class="x" type="button" data-close aria-label="Close settings">✕</button>
+      </header>
+      <div class="sheet-body">
+        <div class="place-row">
+          <div>
+            <div class="place" id="placeName">—</div>
+            <div class="place-sub" id="placeSub">Locating…</div>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Locations</label>
+          <div id="placeList" class="placelist"></div>
+          <div id="searchBox" class="search" role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-owns="searchResults">
+            <input id="searchInput" class="search-input" type="search" inputmode="search"
+                   autocomplete="off" autocapitalize="words" spellcheck="false"
+                   placeholder="Search a coastal city…" aria-label="Search for a city"
+                   aria-controls="searchResults" aria-autocomplete="list" />
+            <button type="button" id="searchClear" class="search-clear" aria-label="Clear search" hidden>✕</button>
+            <ul id="searchResults" class="results" role="listbox" aria-label="City results" hidden></ul>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Clock</label>
+          <div class="seg" data-setting="clock">
+            <button type="button" data-value="auto">Auto</button>
+            <button type="button" data-value="12">12h</button>
+            <button type="button" data-value="24">24h</button>
+          </div>
+        </div>
+      </div>
+
+      <footer class="sheet-foot">
+        <span id="tideSrc">—</span>
+        <span class="dot">·</span>
+        <span>Sky: Open-Meteo</span>
+        <span class="dot">·</span>
+        <span>Tides: NOAA</span>
+      </footer>
+    </div>
+  </div>
+</body>
+</html>
