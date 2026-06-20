@@ -1,43 +1,26 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="24 by 7 weather grid icon concept">
-  <defs>
-    <linearGradient id="g2" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#3b93ff"/>
-      <stop offset="0.52" stop-color="#17fff0"/>
-      <stop offset="1" stop-color="#30ff87"/>
-    </linearGradient>
-    <linearGradient id="g4" x1="0" y1="1" x2="1" y2="0">
-      <stop offset="0" stop-color="#30ff87"/>
-      <stop offset="0.55" stop-color="#77ff00"/>
-      <stop offset="1" stop-color="#ddff00"/>
-    </linearGradient>
-    <linearGradient id="gx" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#ddff00"/>
-      <stop offset="0.52" stop-color="#ffd900"/>
-      <stop offset="1" stop-color="#ffb300"/>
-    </linearGradient>
-    <linearGradient id="g7" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#ffb300"/>
-      <stop offset="0.52" stop-color="#f97600"/>
-      <stop offset="1" stop-color="#dc2626"/>
-    </linearGradient>
-  </defs>
-
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
   <rect width="512" height="512" rx="96" fill="#0b0e14"/>
   <g>
-    <rect x="70" y="70" width="176" height="176" rx="26" fill="url(#g2)"/>
-    <rect x="266" y="70" width="176" height="176" rx="26" fill="url(#g4)"/>
-    <rect x="70" y="266" width="176" height="176" rx="26" fill="url(#gx)"/>
-    <rect x="266" y="266" width="176" height="176" rx="26" fill="url(#g7)"/>
-  </g>
-
-  <g font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-     font-weight="800"
-     font-size="116"
-     text-anchor="middle"
-     dominant-baseline="central">
-    <text x="158" y="158" fill="#071016">2</text>
-    <text x="354" y="158" fill="#071016">4</text>
-    <text x="158" y="354" fill="#071016">×</text>
-    <text x="354" y="354" fill="#fff7ed">7</text>
+    <!-- 4x4 heatmap motif using NOAA-ramp colors -->
+    <!-- row 0 -->
+    <rect x="96"  y="96"  width="74" height="74" rx="8" fill="#3b93ff"/>
+    <rect x="178" y="96"  width="74" height="74" rx="8" fill="#17fff0"/>
+    <rect x="260" y="96"  width="74" height="74" rx="8" fill="#30ff87"/>
+    <rect x="342" y="96"  width="74" height="74" rx="8" fill="#77ff00"/>
+    <!-- row 1 -->
+    <rect x="96"  y="178" width="74" height="74" rx="8" fill="#17fff0"/>
+    <rect x="178" y="178" width="74" height="74" rx="8" fill="#30ff87"/>
+    <rect x="260" y="178" width="74" height="74" rx="8" fill="#ddff00"/>
+    <rect x="342" y="178" width="74" height="74" rx="8" fill="#ffd900"/>
+    <!-- row 2 -->
+    <rect x="96"  y="260" width="74" height="74" rx="8" fill="#30ff87"/>
+    <rect x="178" y="260" width="74" height="74" rx="8" fill="#ddff00"/>
+    <rect x="260" y="260" width="74" height="74" rx="8" fill="#ffb300"/>
+    <rect x="342" y="260" width="74" height="74" rx="8" fill="#f97600"/>
+    <!-- row 3 -->
+    <rect x="96"  y="342" width="74" height="74" rx="8" fill="#ffd900"/>
+    <rect x="178" y="342" width="74" height="74" rx="8" fill="#ffb300"/>
+    <rect x="260" y="342" width="74" height="74" rx="8" fill="#f97600"/>
+    <rect x="342" y="342" width="74" height="74" rx="8" fill="#dc2626"/>
   </g>
 </svg>
