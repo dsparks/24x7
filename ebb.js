@@ -424,7 +424,9 @@ function drawCell(fc, dt){
       ctx.strokeStyle = 'rgba(170,200,235,.55)'; ctx.lineWidth = 1; ctx.lineCap = 'round';
       for (const p of fc.precip){
         p.y = (p.y + p.v * dt * 0.9) % 1;
-        const py = top + p.y * skyH, px = left + p.x * w, len = Math.min(6, skyH * 0.18);
+        const py = top + p.y * skyH;
+        const px = left + p.x * w + slant * p.y * skyH;        // drift sideways as it falls — same slope as the streak
+        const len = Math.min(6, skyH * 0.18);
         ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px - slant * len, py - len); ctx.stroke();
       }
     }
