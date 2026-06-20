@@ -29,6 +29,25 @@
   <!-- Tap-a-cell readout -->
   <div id="tip" class="tip" role="status" aria-live="polite" hidden></div>
 
+  <!-- First-run coach marks (shown once, over the real grid) -->
+  <div id="coach" class="coach" hidden>
+    <div class="coach-bg" data-coachclose></div>
+    <div class="coach-gear" aria-hidden="true">⤡ <b>Settings</b> live in this corner</div>
+    <div class="coach-center" role="dialog" aria-modal="true" aria-label="Welcome to Ebb">
+      <div class="coach-head">
+        <h1 class="coach-title">Welcome to Ebb</h1>
+        <p class="coach-sub">A week of fishing conditions, in 168 ocean slices.</p>
+      </div>
+      <p class="coach-tap"><b>Tap</b> any square for that hour's tide, wind, sky, and rain.</p>
+      <p class="coach-swipe"><span class="sw-arrows" aria-hidden="true">⇆</span> <b>Swipe</b> left or right to cycle saved locations.</p>
+      <p class="coach-hold"><b>Water height</b> shows tide; surface texture shows wind and chop.</p>
+      <div class="coach-actions">
+        <button type="button" class="btn" id="coachGot">Got it</button>
+        <button type="button" class="btn linkbtn" id="coachMore">More tips ›</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Settings sheet -->
   <div id="settings" class="sheet" hidden>
     <div class="sheet-backdrop" data-close></div>
@@ -66,6 +85,8 @@
             <button type="button" data-value="24">24h</button>
           </div>
         </div>
+
+        <button type="button" class="btn linkbtn" id="aboutBtn">How to use &amp; tips</button>
       </div>
 
       <footer class="sheet-foot">
@@ -75,6 +96,33 @@
         <span class="dot">·</span>
         <span>Tides: NOAA</span>
       </footer>
+    </div>
+  </div>
+
+  <!-- How to use / about -->
+  <div id="aboutSheet" class="sheet" hidden>
+    <div class="sheet-backdrop" data-aclose></div>
+    <div class="sheet-card" role="dialog" aria-modal="true" aria-label="How to use">
+      <header class="sheet-head">
+        <button class="back" type="button" id="aboutBack" aria-label="Back to settings">‹</button>
+        <h1>How to use</h1>
+        <button class="x" type="button" data-aclose aria-label="Close">✕</button>
+      </header>
+      <div class="sheet-body">
+        <p class="about-intro"><b>Ebb</b> shows a whole week of fishing and boating conditions as a living ocean cutaway. Each square is one hour: sky above, tide below, with wind, chop, precipitation, and night stars layered in.</p>
+
+        <h2 class="about-h">Tips</h2>
+        <ul class="about-tips">
+          <li><b>Tap a square</b> to see that hour's tide height, rising/falling tide, wind, cloud cover, precipitation, and temperature.</li>
+          <li><b>Read the waterline</b> as tide: higher black water means higher tide; lower black water means lower tide.</li>
+          <li><b>Watch the surface</b> for wind and chop. Stronger wind makes rougher water, whitecaps, and spray.</li>
+          <li><b>Swipe left or right</b> to cycle through your saved locations. It wraps around when you reach the end.</li>
+          <li><b>Move the little popup</b> wherever you like. Press and hold it to reset it to its default spot.</li>
+          <li><b>Save coastal places</b> in Settings. Ebb uses Open-Meteo for sky and wind, and nearby NOAA tide stations when available.</li>
+        </ul>
+
+        <p class="about-foot">Tides can vary by shoreline and station distance. Simulated tide is a fallback when no nearby NOAA tide station is available; do not use Ebb for navigation.</p>
+      </div>
     </div>
   </div>
 </body>

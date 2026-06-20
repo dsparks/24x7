@@ -172,6 +172,7 @@ const isFreezingRain = cell => !!cell && FREEZING_RAIN_CODES.has(cell.wcode);
 function precipKind(cell){
   if (!cell) return null;
   const pop = cell.pop || 0;
+  if (pop <= 10) return null;
   const inch = mmToIn(cell.precip || 0);
   const isSnow = (cell.snow || 0) > 0;
   const thunder = isThunder(cell);
@@ -281,7 +282,7 @@ function resetPopupPosition(kind, el, fallback){
     el.style.transform = '';
   }
 }
-function makeDraggablePopup(kind, el, afterDrag, beforeDrag, fallback){
+function makeDraggablePopup(kind, el, afterDrag, beforeDrag, fallback, onTap){
   let drag = null, lastTap = 0, holdTimer = 0;
   const TAP_SLOP = 8;
   const HOLD_MS = 650;
@@ -334,9 +335,12 @@ function makeDraggablePopup(kind, el, afterDrag, beforeDrag, fallback){
     if (!drag) return;
     clearTimeout(holdTimer);
     const now = performance.now();
-    const doubleTap = !drag.moved && now - lastTap < 320;
+    const doubleTap = !onTap && !drag.moved && now - lastTap < 320;
+    const tapped = !drag.moved && !drag.reset && !doubleTap;
     if (drag.reset) {
       // Already reset by long-press; just let the popup's normal timer resume.
+    } else if (tapped && onTap) {
+      onTap();
     } else if (doubleTap) resetPopupPosition(kind, el, fallback);
     else {
       const r = el.getBoundingClientRect();
@@ -1071,8 +1075,9 @@ document.addEventListener('visibilitychange', () => {
 });
 
 /* ---------- Tap-a-cell readout ---------- */
-let tipTimer = null, selEl = null;
+let tipTimer = null, selEl = null, suppressTipGridClickUntil = 0;
 gridEl.addEventListener('click', e => {
+  if (performance.now() < suppressTipGridClickUntil) return;
   if (lpFired || swiped){ lpFired = false; swiped = false; return; }   // long-press/swipe: not a tap
   const c = e.target.closest('.cell');
   if (!c || c.classList.contains('empty')) return;
@@ -1190,19 +1195,24 @@ function showTip(di, h, el){
   tipEl.hidden = false;
   applyPopupPosition('tip', tipEl);
   clearTimeout(tipTimer);
-  tipTimer = setTimeout(hideTip, 3200);
+  tipTimer = setTimeout(hideTip, 15000);
 }
 function hideTip(){
+  clearTimeout(tipTimer);
   tipEl.hidden = true;
   if (selEl){ selEl.classList.remove('sel'); selEl = null; }
+}
+function dismissTipFromPopup(){
+  suppressTipGridClickUntil = performance.now() + 450;
+  setTimeout(hideTip, 0);
 }
 document.addEventListener('click', e => {
   if (!e.target.closest('.cell') && !e.target.closest('.tip')) hideTip();
 }, true);
 makeDraggablePopup('tip', tipEl, () => {
   clearTimeout(tipTimer);
-  tipTimer = setTimeout(hideTip, 3200);
-}, () => clearTimeout(tipTimer));
+  if (!tipEl.hidden) tipTimer = setTimeout(hideTip, 15000);
+}, () => clearTimeout(tipTimer), null, dismissTipFromPopup);
 
 /* ---------- Settings sheet ---------- */
 function openSheet(){ syncSheet(); sheetEl.hidden = false; }

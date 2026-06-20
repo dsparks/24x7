@@ -35,8 +35,7 @@ body{
   background:var(--bg);color:var(--muted);line-height:1;text-align:center;overflow:hidden;
 }
 .head.day{font-weight:600;white-space:nowrap;font-size:var(--dayfs,clamp(8px,1.7vmin,13px))}
-.grid.p .head.day{flex-direction:row;gap:.06em}
-.grid.l .head.day{flex-direction:column;gap:0}
+.head.day{flex-direction:column;gap:0}
 .head.day .dow{color:var(--ink)}
 .head.day .dnum{color:var(--muted);font-weight:500}
 .head.today .dow,.head.today .dnum{color:#ffd23f}
@@ -67,6 +66,29 @@ body{
 .tip .tip-place{display:block;font-size:.82em;color:var(--muted);margin-bottom:2px;font-weight:600}
 .tip .tide-rise{color:#6fd3ff}
 .tip .tide-fall{color:#ffb27f}
+
+/* ---------- First-run coach marks ---------- */
+.coach{position:fixed;inset:0;z-index:60;color:var(--ink);animation:coachIn .25s ease}
+.coach[hidden]{display:none}
+@keyframes coachIn{from{opacity:0}to{opacity:1}}
+.coach-bg{position:absolute;inset:0;background:rgba(5,7,12,.76);backdrop-filter:blur(2px)}
+.coach-gear{position:absolute;top:max(10px,env(safe-area-inset-top));left:14px;font-size:.95rem;color:var(--muted)}
+.coach-gear b{color:#7fb0ff;font-weight:700}
+.coach-center{
+  position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+  width:min(370px,86vw);display:flex;flex-direction:column;gap:1.35rem;text-align:center;
+}
+.coach-head{display:flex;flex-direction:column;gap:.25rem}
+.coach-title{margin:0;font-size:1.5rem;font-weight:700;letter-spacing:.5px;color:var(--ink)}
+.coach-sub{font-size:.95rem;color:var(--muted)}
+.coach-center p{margin:0;font-size:1rem;line-height:1.5;color:var(--muted)}
+.coach-center b{color:var(--ink);font-weight:700}
+.coach-swipe{color:var(--ink)!important}
+.sw-arrows{display:inline-block;font-size:1.5rem;color:#7fb0ff;animation:swWig 1.4s ease-in-out infinite}
+@keyframes swWig{0%,100%{transform:translateX(-7px)}50%{transform:translateX(7px)}}
+.coach-actions{display:flex;gap:.6rem;align-items:center;justify-content:center;margin-top:.35rem}
+.coach-actions .btn{width:auto;padding:.55rem 1.1rem}
+.coach-actions .linkbtn{margin-top:0;width:auto;border:0}
 
 /* ---------- Settings sheet (borrowed from 24x7) ---------- */
 .sheet{position:fixed;inset:0;z-index:50}
@@ -101,6 +123,14 @@ body{
 .linkbtn{margin-top:.55rem;width:100%;color:#7fb0ff;border-style:dashed}
 .sheet-foot{display:flex;align-items:center;gap:.4rem;justify-content:center;color:var(--muted);font-size:.78rem;margin-top:1.1rem;flex-wrap:wrap}
 .sheet-foot .dot{opacity:.5}
+.back{background:transparent;border:0;color:var(--muted);font-size:1.4rem;line-height:1;cursor:pointer;padding:0 .3rem}
+.about-intro{color:var(--ink);font-size:.95rem;line-height:1.55;margin:.1rem 0 1.3rem}
+.about-h{font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:0 0 .6rem}
+.about-tips{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.75rem}
+.about-tips li{position:relative;padding-left:1.1rem;color:var(--muted);font-size:.92rem;line-height:1.5}
+.about-tips li::before{content:"";position:absolute;left:.15rem;top:.6em;width:5px;height:5px;border-radius:50%;background:#2b7fff}
+.about-tips li b{color:var(--ink);font-weight:600}
+.about-foot{color:var(--muted);font-size:.82rem;line-height:1.45;margin:1.1rem 0 0}
 
 /* ---------- Location search (typeahead, borrowed) ---------- */
 .search{position:relative}

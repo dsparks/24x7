@@ -4,7 +4,7 @@
  * Borrows the grid/layout/search scaffolding from its sibling 24×7. */
 const APP_NAME = 'Ebb';
 const $ = sel => document.querySelector(sel);
-const LS = { settings: 'ebb.settings', cache: 'ebb.cache', stations: 'ebb.stations' };
+const LS = { settings: 'ebb.settings', cache: 'ebb.cache', stations: 'ebb.stations', coach: 'ebb.coach' };
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -296,35 +296,25 @@ function cellEl(di, h){
 const isPortrait = () => innerHeight >= innerWidth;
 function render(){
   if (!days.length) return;
-  const portrait = isPortrait();
-  orientation = portrait ? 'p' : 'l';
+  orientation = isPortrait() ? 'p' : 'l';
   const n = days.length;
   const frag = document.createDocumentFragment();
   gridEl.className = 'grid ' + orientation;
   fx.cells = [];
-  if (portrait){
-    gridEl.style.gridTemplateColumns = `var(--label) repeat(${n}, minmax(0,1fr))`;
-    gridEl.style.gridTemplateRows = `var(--label-day) repeat(24, minmax(0,1fr))`;
-    frag.appendChild(corner());
-    days.forEach(d => frag.appendChild(dayHead(d)));
-    for (let h = 0; h < 24; h++){ frag.appendChild(hourHead(h)); for (let di = 0; di < n; di++) frag.appendChild(cellEl(di, h)); }
-  } else {
-    gridEl.style.gridTemplateColumns = `var(--label-day) repeat(24, minmax(0,1fr))`;
-    gridEl.style.gridTemplateRows = `var(--label) repeat(${n}, minmax(0,1fr))`;
-    frag.appendChild(corner());
-    for (let h = 0; h < 24; h++) frag.appendChild(hourHead(h));
-    days.forEach((d, di) => { frag.appendChild(dayHead(d)); for (let h = 0; h < 24; h++) frag.appendChild(cellEl(di, h)); });
-  }
+  gridEl.style.gridTemplateColumns = `var(--label-day) repeat(24, minmax(0,1fr))`;
+  gridEl.style.gridTemplateRows = `var(--label) repeat(${n}, minmax(0,1fr))`;
+  frag.appendChild(corner());
+  for (let h = 0; h < 24; h++) frag.appendChild(hourHead(h));
+  days.forEach((d, di) => { frag.appendChild(dayHead(d)); for (let h = 0; h < 24; h++) frag.appendChild(cellEl(di, h)); });
   gridEl.replaceChildren(frag);
   layoutFx();
 }
 
 const DAY_SCALE = 0.8, HOUR_SCALE = 1.1, CW = 0.62;
 function fitHeaders(){
-  const portrait = orientation === 'p';
   const d = gridEl.querySelector('.head.day');
   if (d){ const w = d.clientWidth, hh = d.clientHeight;
-    const px = (portrait ? Math.min(hh * 0.86, w / (4 * CW)) : Math.min(hh * 0.46, w / (2 * CW))) * DAY_SCALE;
+    const px = Math.min(hh * 0.46, w / (2 * CW)) * DAY_SCALE;
     gridEl.style.setProperty('--dayfs', Math.max(7, Math.round(px)) + 'px'); }
   const hr = gridEl.querySelector('.head.hour');
   if (hr){ const w = hr.clientWidth, hh = hr.clientHeight; const len = clock24() ? 2 : 3;
@@ -356,7 +346,7 @@ function buildCellFx(fc){
   }
   // precip particles
   fc.precip = []; fc.snow = (c.snowCm || 0) > 0;
-  const wet = (c.precipMm || 0) > 0 || (fc.snow && c.snowCm > 0);
+  const wet = (c.pop || 0) > 10 && ((c.precipMm || 0) > 0 || (fc.snow && c.snowCm > 0));
   if (wet){
     const intensity = clamp((fc.snow ? c.snowCm * 3 : c.precipMm * 6), 0.4, 6);
     const n = Math.round(3 + intensity * 2.2);
@@ -521,8 +511,7 @@ function drawNowLine(){
   const ctx = fx.ctx; ctx.save();
   ctx.strokeStyle = '#ff2b2b'; ctx.lineWidth = 2; ctx.shadowColor = 'rgba(255,43,43,.8)'; ctx.shadowBlur = 6;
   ctx.beginPath();
-  if (orientation === 'p'){ const y = fc.y + frac * fc.hgt; ctx.moveTo(fc.x, y); ctx.lineTo(fc.x + fc.w, y); }
-  else { const x = fc.x + frac * fc.w; ctx.moveTo(x, fc.y); ctx.lineTo(x, fc.y + fc.hgt); }
+  const x = fc.x + frac * fc.w; ctx.moveTo(x, fc.y); ctx.lineTo(x, fc.y + fc.hgt);
   ctx.stroke(); ctx.restore();
 }
 function frame(now){
@@ -551,7 +540,7 @@ function clampPopupPoint(el, x, y){
 function setPopupPoint(el, x, y){ const p = clampPopupPoint(el, x, y); el.style.left = p.x + 'px'; el.style.top = p.y + 'px'; el.style.right = 'auto'; el.style.bottom = 'auto'; el.style.transform = 'translate(-50%,-50%)'; }
 function applyPopupPosition(kind, el){ const s = settings.popupPos?.[kind]; if (s) setPopupPoint(el, s.x * innerWidth, s.y * innerHeight); }
 function resetPopupPosition(kind, el){ delete settings.popupPos[kind]; saveSettings(); el.style.left = el.style.top = el.style.right = el.style.bottom = el.style.transform = ''; }
-function makeDraggablePopup(kind, el, afterDrag, beforeDrag){
+function makeDraggablePopup(kind, el, afterDrag, beforeDrag, onTap){
   let drag = null, lastTap = 0, holdTimer = 0; const SLOP = 8, HOLD = 650;
   el.addEventListener('pointerdown', e => {
     if (e.button != null && e.button !== 0) return;
@@ -571,8 +560,10 @@ function makeDraggablePopup(kind, el, afterDrag, beforeDrag){
   });
   function finish(e){
     if (!drag) return; clearTimeout(holdTimer);
-    const now = performance.now(), dbl = !drag.moved && now - lastTap < 320;
+    const now = performance.now(), dbl = !onTap && !drag.moved && now - lastTap < 320;
+    const tapped = !drag.moved && !drag.reset && !dbl;
     if (drag.reset){ /* already reset by long-press */ }
+    else if (tapped && onTap) onTap();
     else if (dbl) resetPopupPosition(kind, el);
     else { const r = el.getBoundingClientRect(); settings.popupPos[kind] = { x: (r.left + r.width / 2) / innerWidth, y: (r.top + r.height / 2) / innerHeight }; saveSettings(); }
     el.classList.remove('dragging'); el.releasePointerCapture?.(e.pointerId);
@@ -584,7 +575,7 @@ function makeDraggablePopup(kind, el, afterDrag, beforeDrag){
 }
 
 /* ---------- Grid gestures: tap → readout; horizontal swipe → cycle locations ---------- */
-const tipEl = $('#tip'); let tipTimer = 0;
+const tipEl = $('#tip'); let tipTimer = 0, suppressTipGridClickUntil = 0;
 let gX = 0, gY = 0, swiped = false;
 gridEl.addEventListener('pointerdown', e => { swiped = false; gX = e.clientX; gY = e.clientY; });
 gridEl.addEventListener('pointerup', e => {
@@ -592,6 +583,7 @@ gridEl.addEventListener('pointerup', e => {
   if (ax > 55 && ax > ay * 1.4){ swiped = true; cycleLocation(dx < 0 ? 1 : -1); }
 });
 gridEl.addEventListener('click', e => {
+  if (performance.now() < suppressTipGridClickUntil) return;
   if (swiped){ swiped = false; return; }                       // a swipe is not a tap
   const c = e.target.closest('.cell'); if (!c || c.classList.contains('empty')) return;
   showTip(+c.dataset.di, +c.dataset.h);
@@ -604,7 +596,11 @@ function cycleLocation(dir){
   const next = (cur + dir + count) % count;
   switchTo(next === 0 ? null : next - 1);
 }
-function hideTip(){ tipEl.hidden = true; }
+function hideTip(){ clearTimeout(tipTimer); tipEl.hidden = true; }
+function dismissTipFromPopup(){
+  suppressTipGridClickUntil = performance.now() + 450;
+  setTimeout(hideTip, 0);
+}
 function showTip(di, h){
   const c = days[di]?.cells[h]; if (!c) return;
   const d = days[di];
@@ -614,19 +610,19 @@ function showTip(di, h){
     bits.push(`· tide ${c.tideFt.toFixed(1)} ft ${arrow}`);
   }
   bits.push(`· wind ${Math.round(c.windMph)}${c.windDir != null ? ' ' + compass8(c.windDir) : ''} mph`);
-  if ((c.precipMm || 0) > 0 || (c.snowCm || 0) > 0) bits.push(`· ${c.pop | 0}% ${c.snowCm > 0 ? 'snow' : 'rain'}`);
+  if ((c.pop || 0) > 10 && ((c.precipMm || 0) > 0 || (c.snowCm || 0) > 0)) bits.push(`· ${c.pop | 0}% ${c.snowCm > 0 ? 'snow' : 'rain'}`);
   bits.push(`· ${c.cloud | 0}% cloud`);
   if (c.tF != null) bits.push(`· ${Math.round(c.tF)}°`);
   const head = place.name && place.name !== '—' ? `<span class="tip-place">${place.name}</span>` : '';
   tipEl.innerHTML = head + bits.join(' ');
-  tipEl.classList.toggle('top', orientation === 'p');
+  tipEl.classList.remove('top');
   const cellH = gridEl.querySelector('.cell:not(.empty)')?.getBoundingClientRect().height || 0;
   tipEl.style.setProperty('--tip-shift', Math.round(cellH) + 'px');
   tipEl.hidden = false;
   applyPopupPosition('tip', tipEl);                            // honor a saved dragged position
-  clearTimeout(tipTimer); tipTimer = setTimeout(hideTip, 3600);
+  clearTimeout(tipTimer); tipTimer = setTimeout(hideTip, 15000);
 }
-makeDraggablePopup('tip', tipEl, () => { clearTimeout(tipTimer); tipTimer = setTimeout(hideTip, 3600); }, () => clearTimeout(tipTimer));
+makeDraggablePopup('tip', tipEl, () => { clearTimeout(tipTimer); if (!tipEl.hidden) tipTimer = setTimeout(hideTip, 15000); }, () => clearTimeout(tipTimer), dismissTipFromPopup);
 
 /* ---------- Settings sheet ---------- */
 const sheetEl = $('#settings');
@@ -643,6 +639,25 @@ document.querySelectorAll('.seg').forEach(seg => seg.addEventListener('click', e
   const btn = e.target.closest('button'); if (!btn) return;
   settings[seg.dataset.setting] = btn.dataset.value; saveSettings(); syncSheet(); render();
 }));
+
+/* ---------- How to use / about ---------- */
+const aboutEl = $('#aboutSheet');
+$('#aboutBtn').addEventListener('click', () => { sheetEl.hidden = true; aboutEl.hidden = false; });
+$('#aboutBack').addEventListener('click', () => { aboutEl.hidden = true; sheetEl.hidden = false; });
+aboutEl.addEventListener('click', e => { if (e.target.dataset.aclose !== undefined) aboutEl.hidden = true; });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !aboutEl.hidden) aboutEl.hidden = true; });
+
+/* ---------- First-run coach marks (shown once) ---------- */
+const coachEl = $('#coach');
+function closeCoach(){ coachEl.hidden = true; try { localStorage.setItem(LS.coach, '1'); } catch {} }
+$('#coachGot').addEventListener('click', closeCoach);
+$('#coachMore').addEventListener('click', () => { closeCoach(); aboutEl.hidden = false; });
+coachEl.addEventListener('click', e => { if (e.target.dataset.coachclose !== undefined) closeCoach(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !coachEl.hidden) closeCoach(); });
+function maybeShowCoach(){
+  let seen = false; try { seen = localStorage.getItem(LS.coach) === '1'; } catch {}
+  if (!seen) coachEl.hidden = false;
+}
 
 /* ---------- Saved locations ---------- */
 function placeItem(name, active, onSelect, onDelete){
@@ -795,6 +810,7 @@ if ('serviceWorker' in navigator) addEventListener('load', () => navigator.servi
 /* ---------- Boot ---------- */
 function boot(){
   days = placeholderDays(); render();             // instant, navigable UI (gear reachable) before data lands
+  maybeShowCoach();
   const active = settings.activeIdx != null ? settings.places[settings.activeIdx] : null;
   if (active?.test) return loadTest();
   if (active){ setPlace(active.name || 'Saved', active.admin || ''); return load(active.lat, active.lon); }
