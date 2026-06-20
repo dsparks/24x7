@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#16244c"/>
+      <stop offset="0.35" stop-color="#3c5c95"/>
+      <stop offset="0.5" stop-color="#b86a4e"/>
+      <stop offset="0.586" stop-color="#f4a259"/>
+    </linearGradient>
+    <radialGradient id="sun" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#fff4d2"/>
+      <stop offset="0.7" stop-color="#ffd277"/>
+      <stop offset="1" stop-color="#ffc25e"/>
+    </radialGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ffd277" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#ffd277" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="round"><rect width="512" height="512" rx="96"/></clipPath>
+  </defs>
+  <g clip-path="url(#round)">
+    <!-- sky -->
+    <rect width="512" height="512" fill="url(#sky)"/>
+    <!-- stars -->
+    <circle cx="372" cy="104" r="3.6" fill="#fff" opacity="0.92"/>
+    <circle cx="430" cy="170" r="2.6" fill="#fff" opacity="0.7"/>
+    <circle cx="300" cy="74" r="2.4" fill="#fff" opacity="0.8"/>
+    <!-- sun setting into the sea -->
+    <circle cx="172" cy="300" r="150" fill="url(#glow)"/>
+    <circle cx="172" cy="292" r="58" fill="url(#sun)"/>
+    <!-- pure-black water with a wavy surface (the app's signature) -->
+    <path d="M0,300 Q64,278 128,300 T256,300 T384,300 T512,300 L512,512 L0,512 Z" fill="#000"/>
+    <!-- thin crest highlight along the waterline -->
+    <path d="M0,300 Q64,278 128,300 T256,300 T384,300 T512,300" fill="none" stroke="#a6c6e6" stroke-width="4" stroke-opacity="0.55" stroke-linecap="round"/>
+  </g>
+</svg>

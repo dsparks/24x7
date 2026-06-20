@@ -789,6 +789,9 @@ function genTestForecast(){
 /* ---------- Resize ---------- */
 let rT; addEventListener('resize', () => { clearTimeout(rT); rT = setTimeout(() => { (isPortrait() ? 'p' : 'l') !== orientation ? render() : layoutFx(); }, 120); });
 
+/* ---------- Service worker (offline / installable PWA) ---------- */
+if ('serviceWorker' in navigator) addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+
 /* ---------- Boot ---------- */
 function boot(){
   days = placeholderDays(); render();             // instant, navigable UI (gear reachable) before data lands

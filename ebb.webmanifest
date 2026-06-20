@@ -1,0 +1,14 @@
+{
+  "name": "Ebb — Fishing Conditions",
+  "short_name": "Ebb",
+  "description": "A week of fishing conditions, one screen. Tide, wind, and sky as an ocean cutaway.",
+  "start_url": "ebb.html",
+  "scope": "ebb.html",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#05070c",
+  "theme_color": "#05070c",
+  "icons": [
+    { "src": "ebb.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
