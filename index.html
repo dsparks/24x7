@@ -16,7 +16,8 @@
   <!-- Warm up the weather hosts so the forecast fetch starts sooner (perceived load). -->
   <link rel="preconnect" href="https://api.open-meteo.com" crossorigin />
   <link rel="preconnect" href="https://geocoding-api.open-meteo.com" crossorigin />
-  <!-- Download app.js in parallel with head parsing; execute after DOM is ready. -->
+  <!-- Download scripts in parallel with head parsing; execute after DOM is ready. -->
+  <script src="lightning.js" defer></script>
   <script src="app.js" defer></script>
 </head>
 <body>

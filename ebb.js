@@ -342,7 +342,7 @@ function rollDir(deg){
 function buildCellFx(fc){
   const c = fc.cell;
   fc.thunder = isThunder(c) && (c.pop || 0) > 10;
-  fc.flashPhase = ((fc.di * 37 + fc.h * 17) % 100) / 100;
+  if (fc.thunder) LightningFx.seedCell(fc, fc.di, fc.h);
   // stars
   fc.stars = [];
   if (c._starA > 0.02){
@@ -404,23 +404,7 @@ function drawCell(fc, dt){
   // lightning flashes inside thunderstorm cells
   if (fc.thunder){
     const skyH = Math.max(2, waterTop - top);
-    const cycle = (fx.t * 0.22 + fc.flashPhase) % 1;
-    const env = Math.max(Math.exp(-cycle * 35), 0.65 * Math.exp(-Math.abs(cycle - 0.065) * 55));
-    if (env > 0.035){
-      ctx.fillStyle = `rgba(210,225,255,${(0.18 * env).toFixed(3)})`;
-      ctx.fillRect(left, top, w, skyH);
-      const bx = left + w * (0.24 + 0.52 * fc.flashPhase);
-      const by = top + skyH * 0.08;
-      ctx.strokeStyle = `rgba(255,246,210,${(0.8 * env).toFixed(3)})`;
-      ctx.lineWidth = Math.max(0.75, Math.min(1.6, w * 0.035));
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      ctx.moveTo(bx, by);
-      ctx.lineTo(bx - w * 0.10, top + skyH * 0.34);
-      ctx.lineTo(bx + w * 0.03, top + skyH * 0.48);
-      ctx.lineTo(bx - w * 0.08, top + skyH * 0.72);
-      ctx.stroke();
-    }
+    LightningFx.drawCell(ctx, fx.t, fc, { x: left, y: top, w, h: skyH });
   }
   // precip (sky band) — blown the SAME way the chop rolls (rollDir), strength ∝ wind
   if (fc.precip.length){

@@ -562,7 +562,7 @@ function cellEl(di, h){
   const thunder = showPrecipFx && isThunder(cell);
   const windy = !showPrecipFx && (cell.windMph || 0) >= WIND_MIN;   // dry + notably windy
   const hot = !showPrecipFx && !windy && cToF(cell.c) >= 95;        // wind wins over shimmer on hot, dry, windy hours
-  if (thunder || hot || windy) fx.fxCells.push({ el, di, h, ink, thunder, hot, windy, wind: cell.windMph || 0, dir: cell.windDir });
+  if (thunder || hot || windy) fx.fxCells.push({ el, di, hour: h, ink, thunder, hot, windy, wind: cell.windMph || 0, dir: cell.windDir });
 
   const num = cellNumber(cell);
   if (num != null){
@@ -846,8 +846,8 @@ function buildFilaments(fc, n){
   }
 }
 
-/* Measure ambient-effect cells and bucket them: hot + contiguous thunderstorm
-   groups (so a lightning flash stays contained within a single storm). Windy
+/* Measure ambient-effect cells and bucket them: hot + independent thunderstorm
+   cells (so lightning flickers cell-by-cell instead of region-by-region). Windy
    cells get a filament count proportional to wind & area, capped by a global
    budget so a fully-blustery week can't blow the per-frame stroke count up. */
 function layoutAmbient(g){
@@ -859,7 +859,8 @@ function layoutAmbient(g){
     fc.col = inkRGB(fc.ink);
     if (fc.hot) fx.hot.push(fc);
     if (fc.thunder){
-      fc.flashPhase = ((fc.di * 37 + fc.h * 17) % 100) / 100;
+      const hour = fc.hour ?? 0;
+      LightningFx.seedCell(fc, fc.di, hour);
       fx.thunder.push(fc);
     }
     if (fc.windy){
@@ -1005,26 +1006,7 @@ function drawLightning(now){
   if (!fx.thunder || !fx.thunder.length) return;
   const ctx = fx.ctx;
   for (const fc of fx.thunder){
-    const cycle = (fx.t * 0.22 + fc.flashPhase) % 1;
-    const env = Math.max(Math.exp(-cycle * 35), 0.65 * Math.exp(-Math.abs(cycle - 0.065) * 55));
-    if (env <= 0.035) continue;
-    ctx.save();
-    ctx.beginPath(); ctx.rect(fc.x, fc.y, fc.w, fc.h); ctx.clip();
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.fillStyle = `rgba(210,225,255,${(0.18 * env).toFixed(3)})`;
-    ctx.fillRect(fc.x, fc.y, fc.w, fc.h);
-    const bx = fc.x + fc.w * (0.24 + 0.52 * fc.flashPhase);
-    const by = fc.y + fc.h * 0.08;
-    ctx.strokeStyle = `rgba(255,246,210,${(0.8 * env).toFixed(3)})`;
-    ctx.lineWidth = Math.max(0.75, Math.min(1.6, fc.w * 0.035));
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(bx, by);
-    ctx.lineTo(bx - fc.w * 0.10, fc.y + fc.h * 0.34);
-    ctx.lineTo(bx + fc.w * 0.03, fc.y + fc.h * 0.48);
-    ctx.lineTo(bx - fc.w * 0.08, fc.y + fc.h * 0.72);
-    ctx.stroke();
-    ctx.restore();
+    LightningFx.drawCell(ctx, fx.t, fc, { x: fc.x, y: fc.y, w: fc.w, h: fc.h }, { composite: 'lighter' });
   }
 }
 function drawAmbient(now){
