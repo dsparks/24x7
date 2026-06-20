@@ -858,7 +858,10 @@ function layoutAmbient(g){
     fc.x = r.left - g.left; fc.y = r.top - g.top; fc.w = r.width; fc.h = r.height;
     fc.col = inkRGB(fc.ink);
     if (fc.hot) fx.hot.push(fc);
-    if (fc.thunder) fx.thunder.push(fc);
+    if (fc.thunder){
+      fc.flashPhase = ((fc.di * 37 + fc.h * 17) % 100) / 100;
+      fx.thunder.push(fc);
+    }
     if (fc.windy){
       fc.wt = windFrac(fc.wind);
       const as = Math.max(0.45, Math.min(2.4, (fc.w * fc.h) / REF_AREA));
@@ -869,24 +872,6 @@ function layoutAmbient(g){
   }
   const wScale = windRaw > WIND_BUDGET ? WIND_BUDGET / windRaw : 1;
   for (const fc of fx.windy) buildFilaments(fc, Math.max(1, Math.round(fc.wRaw * wScale)));
-  // group contiguous thunderstorm cells (4-neighbour by di/h)
-  fx.boltGroups = [];
-  const seen = new Set(), byKey = new Map();
-  for (const fc of fx.thunder) byKey.set(fc.di + ',' + fc.h, fc);
-  for (const fc of fx.thunder){
-    const k0 = fc.di + ',' + fc.h; if (seen.has(k0)) continue;
-    const group = [], stack = [fc]; seen.add(k0);
-    while (stack.length){
-      const c = stack.pop(); group.push(c);
-      for (const [ddi, dh] of [[1,0],[-1,0],[0,1],[0,-1]]){
-        const nb = byKey.get((c.di + ddi) + ',' + (c.h + dh));
-        if (nb && !seen.has(nb.di + ',' + nb.h)){ seen.add(nb.di + ',' + nb.h); stack.push(nb); }
-      }
-    }
-    fx.boltGroups.push(group);
-  }
-  fx.bolt = null;
-  fx.boltNext = performance.now() + rand(10000, 25000);   // first flash; recurring rate is <1/min
 }
 
 function drawCell(cell, dt, gust){
@@ -1017,23 +1002,28 @@ function drawHeatShimmer(){
   ctx.restore();
 }
 function drawLightning(now){
-  if (!fx.boltGroups || !fx.boltGroups.length) return;
+  if (!fx.thunder || !fx.thunder.length) return;
   const ctx = fx.ctx;
-  if (!fx.bolt && now > fx.boltNext){
-    fx.bolt = { grp: fx.boltGroups[(Math.random() * fx.boltGroups.length) | 0], t0: now, dur: 600 };
-    fx.boltNext = now + rand(75000, 170000);   // genuinely < 1 / minute (one flash every 75–170s)
-  }
-  if (fx.bolt){
-    const e = now - fx.bolt.t0;
-    if (e > fx.bolt.dur){ fx.bolt = null; return; }
-    const env = Math.max(Math.exp(-e / 60), 0.7 * Math.exp(-Math.abs(e - 160) / 50), 0.5 * Math.exp(-Math.abs(e - 300) / 60));
-    if (env < 0.02) return;
-    let minx = 1e9, miny = 1e9, maxx = -1e9, maxy = -1e9;
-    ctx.save(); ctx.beginPath();
-    for (const c of fx.bolt.grp){ ctx.rect(c.x, c.y, c.w, c.h); minx = Math.min(minx, c.x); miny = Math.min(miny, c.y); maxx = Math.max(maxx, c.x + c.w); maxy = Math.max(maxy, c.y + c.h); }
-    ctx.clip(); ctx.globalCompositeOperation = 'lighter';
-    ctx.fillStyle = `rgba(205,222,255,${(0.6 * env).toFixed(3)})`;
-    ctx.fillRect(minx, miny, maxx - minx, maxy - miny);
+  for (const fc of fx.thunder){
+    const cycle = (fx.t * 0.22 + fc.flashPhase) % 1;
+    const env = Math.max(Math.exp(-cycle * 35), 0.65 * Math.exp(-Math.abs(cycle - 0.065) * 55));
+    if (env <= 0.035) continue;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(fc.x, fc.y, fc.w, fc.h); ctx.clip();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = `rgba(210,225,255,${(0.18 * env).toFixed(3)})`;
+    ctx.fillRect(fc.x, fc.y, fc.w, fc.h);
+    const bx = fc.x + fc.w * (0.24 + 0.52 * fc.flashPhase);
+    const by = fc.y + fc.h * 0.08;
+    ctx.strokeStyle = `rgba(255,246,210,${(0.8 * env).toFixed(3)})`;
+    ctx.lineWidth = Math.max(0.75, Math.min(1.6, fc.w * 0.035));
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(bx, by);
+    ctx.lineTo(bx - fc.w * 0.10, fc.y + fc.h * 0.34);
+    ctx.lineTo(bx + fc.w * 0.03, fc.y + fc.h * 0.48);
+    ctx.lineTo(bx - fc.w * 0.08, fc.y + fc.h * 0.72);
+    ctx.stroke();
     ctx.restore();
   }
 }

@@ -34,6 +34,8 @@ function fmtHourLong(h){
 }
 const COMPASS = ['N','NE','E','SE','S','SW','W','NW'];
 const compass8 = deg => deg == null ? '' : COMPASS[Math.round(((deg % 360) + 360) % 360 / 45) % 8];
+const THUNDER_CODES = new Set([95, 96, 99]);
+const isThunder = c => !!c && THUNDER_CODES.has(c.wcode);
 
 /* ---------- Solar elevation (low-precision, ±~0.5°) ---------- */
 function solarElevation(date, lat, lon){
@@ -92,7 +94,7 @@ function skyStyle(elev, cloud){
 }
 
 /* ---------- Settings ---------- */
-const DEFAULTS = { clock: 'auto', places: [], activeIdx: null, popupPos: {} };
+const DEFAULTS = { clock: 'auto', waves: 'roll', places: [], activeIdx: null, popupPos: {} };
 let settings = loadSettings();
 function loadSettings(){
   let s;
@@ -100,6 +102,7 @@ function loadSettings(){
   catch { s = { ...DEFAULTS }; }
   if (!Array.isArray(s.places)) s.places = [];
   if (!s.popupPos || typeof s.popupPos !== 'object') s.popupPos = {};
+  if (!['roll', 'still'].includes(s.waves)) s.waves = DEFAULTS.waves;
   if (s.activeIdx != null && !(s.activeIdx >= 0 && s.activeIdx < s.places.length)) s.activeIdx = null;
   return s;
 }
@@ -338,6 +341,8 @@ function rollDir(deg){
 
 function buildCellFx(fc){
   const c = fc.cell;
+  fc.thunder = isThunder(c) && (c.pop || 0) > 10;
+  fc.flashPhase = ((fc.di * 37 + fc.h * 17) % 100) / 100;
   // stars
   fc.stars = [];
   if (c._starA > 0.02){
@@ -396,6 +401,27 @@ function drawCell(fc, dt){
       ctx.beginPath(); ctx.arc(left + s.x * w, top + s.y * skyH, s.r, 0, 6.2832); ctx.fill();
     }
   }
+  // lightning flashes inside thunderstorm cells
+  if (fc.thunder){
+    const skyH = Math.max(2, waterTop - top);
+    const cycle = (fx.t * 0.22 + fc.flashPhase) % 1;
+    const env = Math.max(Math.exp(-cycle * 35), 0.65 * Math.exp(-Math.abs(cycle - 0.065) * 55));
+    if (env > 0.035){
+      ctx.fillStyle = `rgba(210,225,255,${(0.18 * env).toFixed(3)})`;
+      ctx.fillRect(left, top, w, skyH);
+      const bx = left + w * (0.24 + 0.52 * fc.flashPhase);
+      const by = top + skyH * 0.08;
+      ctx.strokeStyle = `rgba(255,246,210,${(0.8 * env).toFixed(3)})`;
+      ctx.lineWidth = Math.max(0.75, Math.min(1.6, w * 0.035));
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(bx, by);
+      ctx.lineTo(bx - w * 0.10, top + skyH * 0.34);
+      ctx.lineTo(bx + w * 0.03, top + skyH * 0.48);
+      ctx.lineTo(bx - w * 0.08, top + skyH * 0.72);
+      ctx.stroke();
+    }
+  }
   // precip (sky band) — blown the SAME way the chop rolls (rollDir), strength ∝ wind
   if (fc.precip.length){
     const skyH = Math.max(2, waterTop - top);
@@ -422,14 +448,22 @@ function drawCell(fc, dt){
     }
   }
   // black water surface (chop renderer chosen by CHOP_VERSION)
-  (CHOP_VERSION === 1 ? drawWaterV1 : drawWaterV2)(fc, waterTop);
+  drawWater(fc, waterTop);
   ctx.restore();
 }
 
 /* ---------- Water-surface renderers ----------
  * Switch with CHOP_VERSION: 1 = gentle two-wave chop (the original "chop 1.0"),
- * 2 = directional wind-driven waves with whitecaps + spray that build with wind. */
+ * 2 = directional wind-driven waves with whitecaps + spray that build with wind,
+ * 3 = layered swell, chop, foam, and streaks. */
 const CHOP_VERSION = 2;
+const waveTime = () => settings.waves === 'still' ? 0 : fx.t;
+
+function drawWater(fc, waterTop){
+  if (CHOP_VERSION === 1) return drawWaterV1(fc, waterTop);
+  if (CHOP_VERSION === 2) return drawWaterV2(fc, waterTop);
+  return drawWaterV3(fc, waterTop);
+}
 
 // chop 1.0 — preserved so we can flip back if we prefer it.
 function drawWaterV1(fc, waterTop){
@@ -440,7 +474,8 @@ function drawWaterV1(fc, waterTop){
   const amp = clamp(0.4 + (wind + gust * 0.3) * 0.16, 0.4, h * 0.12);
   const k = (2 * Math.PI) / Math.max(18, w * 0.6);
   const spd = (0.5 + wind * 0.06) * dirSign;
-  const surf = x => waterTop + amp * Math.sin(k * x + fx.t * spd) + amp * 0.4 * Math.sin(2.2 * k * x - fx.t * spd * 1.4);
+  const t = waveTime();
+  const surf = x => waterTop + amp * Math.sin(k * x + t * spd) + amp * 0.4 * Math.sin(2.2 * k * x - t * spd * 1.4);
   ctx.beginPath(); ctx.moveTo(left, bottom);
   for (let x = 0; x <= w; x += 4) ctx.lineTo(left + x, surf(x));
   ctx.lineTo(left + w, bottom); ctx.closePath();
@@ -461,8 +496,9 @@ function drawWaterV2(fc, waterTop){
   const roll = rollDir(c.windDir);                                  // definite L/R side for every heading
   const amp = clamp(0.5 + (wind + gust * 0.4) * 0.16, 0.5, h * 0.16);
   const k = (2 * Math.PI) / Math.max(14, w * (0.62 - wf * 0.34));   // shorter waves when windy
-  const travel = fx.t * (1.1 + wind * 0.12) * roll;                 // horizontal travel; speed ∝ wind, side from roll
-  const bob = fx.t * 1.6;                                           // extra agitation on top of the travel
+  const t = waveTime();
+  const travel = t * (1.1 + wind * 0.12) * roll;                    // horizontal travel; speed ∝ wind, side from roll
+  const bob = t * 1.6;                                              // extra agitation on top of the travel
   const sharp = 0.5 + wf * 0.45;                                    // crest pointiness
   // Precompute the surface once: sharpened trochoid (pointy crests, flat troughs)
   // plus a cross-wave. sin(kx − ωt) ⇒ crests travel toward +x (right) when roll>0.
@@ -494,13 +530,93 @@ function drawWaterV2(fc, waterTop){
         if (fa > 0.4){                                              // spray flicking off downwind (deterministic)
           const n = 1 + Math.round(wf * 2);
           for (let j = 0; j < n; j++){
-            const t2 = (fx.t * (1.4 + j * 0.3) + x * 0.7) % 1;
+            const t2 = (t * (1.4 + j * 0.3) + x * 0.7) % 1;
             const sx = left + x + roll * t2 * (4 + wf * 8);        // same side as the wave travel
             const sy = y - Math.sin(t2 * Math.PI) * (2 + wf * 7);
             ctx.fillStyle = `rgba(228,242,255,${((1 - t2) * 0.5 * fa).toFixed(3)})`;
             ctx.beginPath(); ctx.arc(sx, sy, 0.8, 0, 6.2832); ctx.fill();
           }
         }
+      }
+    }
+  }
+}
+
+// chop 3.0 — layered, directional water: long swell carries the tide line, short
+// chop rides on top, foam appears on windward crests, and low translucent streaks
+// make the black water feel like a surface instead of a flat fill.
+function drawWaterV3(fc, waterTop){
+  const ctx = fx.ctx, c = fc.cell;
+  const left = fc.x, w = fc.w, h = fc.hgt, bottom = fc.y + h;
+  const wind = c.windMph || 0, gust = c.gust || 0;
+  const wf = clamp((wind + gust * 0.35) / 34, 0, 1);
+  const roll = rollDir(c.windDir);
+  const swellAmp = clamp(0.35 + wind * 0.06, 0.35, h * 0.075);
+  const chopAmp = clamp(wf * h * 0.07, 0, h * 0.095);
+  const swellK = (2 * Math.PI) / Math.max(26, w * 1.12);
+  const chopK = (2 * Math.PI) / Math.max(8, w * (0.30 - wf * 0.12));
+  const t = waveTime();
+  const step = 2.5, pts = [];
+  for (let x = 0; x <= w + step; x += step){
+    const swell = Math.sin(swellK * x - t * (0.75 + wind * 0.045) * roll);
+    const chop = Math.sin(chopK * x - t * (1.9 + wind * 0.15) * roll + Math.sin(swellK * x) * 0.8);
+    const cap = Math.sign(chop) * Math.pow(Math.abs(chop), 0.62);
+    pts.push({ x, y: waterTop + swellAmp * swell + chopAmp * cap });
+  }
+
+  ctx.beginPath(); ctx.moveTo(left, bottom);
+  pts.forEach(p => ctx.lineTo(left + p.x, p.y));
+  ctx.lineTo(left + pts[pts.length - 1].x, bottom); ctx.closePath();
+  const water = ctx.createLinearGradient(0, waterTop, 0, bottom);
+  water.addColorStop(0, '#010307');
+  water.addColorStop(1, '#000');
+  ctx.fillStyle = water; ctx.fill();
+
+  ctx.beginPath();
+  pts.forEach((p, i) => i ? ctx.lineTo(left + p.x, p.y) : ctx.moveTo(left + p.x, p.y));
+  ctx.strokeStyle = `rgba(145,190,225,${(0.14 + wf * 0.23).toFixed(3)})`;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Subtle moving streaks below the surface: not foam, just light catching black water.
+  const streakA = 0.04 + wf * 0.07;
+  for (let j = 0; j < 3; j++){
+    const yy = waterTop + h * (0.08 + j * 0.11 + 0.025 * Math.sin(t * (0.7 + j * 0.2) + fc.h));
+    if (yy > bottom - 1) continue;
+    ctx.beginPath();
+    for (let x = 0; x <= w; x += 6){
+      const y = yy + Math.sin(x * 0.14 + t * (1.1 + j * 0.35) * roll + j) * (0.5 + wf * 1.4);
+      x ? ctx.lineTo(left + x, y) : ctx.moveTo(left + x, y);
+    }
+    ctx.strokeStyle = `rgba(105,150,185,${(streakA * (1 - j * 0.22)).toFixed(3)})`;
+    ctx.lineWidth = 0.8;
+    ctx.stroke();
+  }
+
+  // Foam on energetic local crests, pushed downwind into short torn streaks.
+  if (wf > 0.32){
+    const fa = clamp((wf - 0.32) / 0.68, 0, 1);
+    for (let i = 1; i < pts.length - 1; i++){
+      const p = pts[i];
+      if (!(p.y < pts[i - 1].y && p.y <= pts[i + 1].y)) continue;
+      const gate = (Math.sin((p.x + fc.di * 31 + fc.h * 13) * 0.37) + 1) / 2;
+      if (gate < 0.34 + (1 - fa) * 0.42) continue;
+      const len = 2 + fa * 5 + gate * 2;
+      const x0 = left + p.x;
+      const y0 = p.y - 0.4;
+      const alpha = 0.22 + fa * 0.35;
+      ctx.strokeStyle = `rgba(230,244,255,${alpha.toFixed(3)})`;
+      ctx.lineWidth = 1.1;
+      ctx.beginPath();
+      ctx.moveTo(x0 - roll * len * 0.25, y0);
+      ctx.lineTo(x0 + roll * len, y0 + 0.25 * Math.sin(t * 3 + p.x));
+      ctx.stroke();
+      if (fa > 0.55 && gate > 0.72){
+        const sprayT = (t * 1.7 + p.x * 0.19) % 1;
+        ctx.fillStyle = `rgba(230,244,255,${((1 - sprayT) * 0.32 * fa).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(x0 + roll * sprayT * (5 + fa * 7), y0 - Math.sin(sprayT * Math.PI) * (2 + fa * 6), 0.75, 0, 6.2832);
+        ctx.fill();
       }
     }
   }
@@ -514,18 +630,36 @@ function drawNowLine(){
   const x = fc.x + frac * fc.w; ctx.moveTo(x, fc.y); ctx.lineTo(x, fc.y + fc.hgt);
   ctx.stroke(); ctx.restore();
 }
+function drawSelectedCell(){
+  if (!selectedCell) return;
+  const fc = fx.cells.find(c => c.di === selectedCell.di && c.h === selectedCell.h);
+  if (!fc) return;
+  const ctx = fx.ctx;
+  ctx.save();
+  ctx.strokeStyle = '#ffd36a';
+  ctx.lineWidth = 1.25;
+  ctx.shadowColor = 'rgba(255,178,48,.55)';
+  ctx.shadowBlur = 6;
+  ctx.strokeRect(fc.x + 1, fc.y + 1, Math.max(0, fc.w - 2), Math.max(0, fc.hgt - 2));
+  ctx.strokeStyle = 'rgba(255,246,202,.38)';
+  ctx.lineWidth = 1;
+  ctx.shadowBlur = 0;
+  ctx.strokeRect(fc.x + 2.5, fc.y + 2.5, Math.max(0, fc.w - 5), Math.max(0, fc.hgt - 5));
+  ctx.restore();
+}
 function frame(now){
   const dt = Math.min(0.05, (now - fx.last) / 1000 || 0);
   fx.last = now; fx.t = now / 1000;
   fx.ctx.clearRect(0, 0, fx.w, fx.h);
   for (const fc of fx.cells) drawCell(fc, dt);
   drawNowLine();
+  drawSelectedCell();
   fx.raf = requestAnimationFrame(frame);
 }
 function startFx(){
   cancelAnimationFrame(fx.raf); fx.raf = 0;
   if (!fx.cells.length){ fx.ctx?.clearRect(0, 0, fx.w, fx.h); return; }
-  if (reduceMotion.matches){ fx.ctx.clearRect(0, 0, fx.w, fx.h); fx.t = 0; for (const fc of fx.cells) drawCell(fc, 0); drawNowLine(); return; }
+  if (reduceMotion.matches){ fx.ctx.clearRect(0, 0, fx.w, fx.h); fx.t = 0; for (const fc of fx.cells) drawCell(fc, 0); drawNowLine(); drawSelectedCell(); return; }
   fx.last = performance.now(); fx.raf = requestAnimationFrame(frame);
 }
 document.addEventListener('visibilitychange', () => { if (document.hidden){ cancelAnimationFrame(fx.raf); fx.raf = 0; } else startFx(); });
@@ -575,7 +709,7 @@ function makeDraggablePopup(kind, el, afterDrag, beforeDrag, onTap){
 }
 
 /* ---------- Grid gestures: tap → readout; horizontal swipe → cycle locations ---------- */
-const tipEl = $('#tip'); let tipTimer = 0, suppressTipGridClickUntil = 0;
+const tipEl = $('#tip'); let tipTimer = 0, suppressTipGridClickUntil = 0, selectedCell = null;
 let gX = 0, gY = 0, swiped = false;
 gridEl.addEventListener('pointerdown', e => { swiped = false; gX = e.clientX; gY = e.clientY; });
 gridEl.addEventListener('pointerup', e => {
@@ -596,13 +730,17 @@ function cycleLocation(dir){
   const next = (cur + dir + count) % count;
   switchTo(next === 0 ? null : next - 1);
 }
-function hideTip(){ clearTimeout(tipTimer); tipEl.hidden = true; }
+function hideTip(){
+  clearTimeout(tipTimer); tipEl.hidden = true; selectedCell = null;
+  if (reduceMotion.matches) startFx();
+}
 function dismissTipFromPopup(){
   suppressTipGridClickUntil = performance.now() + 450;
   setTimeout(hideTip, 0);
 }
 function showTip(di, h){
   const c = days[di]?.cells[h]; if (!c) return;
+  selectedCell = { di, h };
   const d = days[di];
   const bits = [`<b>${d.dow} ${fmtHourLong(h)}</b>`];
   if (c.tideFt != null){
@@ -610,7 +748,8 @@ function showTip(di, h){
     bits.push(`· tide ${c.tideFt.toFixed(1)} ft ${arrow}`);
   }
   bits.push(`· wind ${Math.round(c.windMph)}${c.windDir != null ? ' ' + compass8(c.windDir) : ''} mph`);
-  if ((c.pop || 0) > 10 && ((c.precipMm || 0) > 0 || (c.snowCm || 0) > 0)) bits.push(`· ${c.pop | 0}% ${c.snowCm > 0 ? 'snow' : 'rain'}`);
+  if ((c.pop || 0) > 10 && isThunder(c)) bits.push(`· ${c.pop | 0}% thunderstorm`);
+  else if ((c.pop || 0) > 10 && ((c.precipMm || 0) > 0 || (c.snowCm || 0) > 0)) bits.push(`· ${c.pop | 0}% ${c.snowCm > 0 ? 'snow' : 'rain'}`);
   bits.push(`· ${c.cloud | 0}% cloud`);
   if (c.tF != null) bits.push(`· ${Math.round(c.tF)}°`);
   const head = place.name && place.name !== '—' ? `<span class="tip-place">${place.name}</span>` : '';
@@ -620,6 +759,7 @@ function showTip(di, h){
   tipEl.style.setProperty('--tip-shift', Math.round(cellH) + 'px');
   tipEl.hidden = false;
   applyPopupPosition('tip', tipEl);                            // honor a saved dragged position
+  if (reduceMotion.matches) startFx();
   clearTimeout(tipTimer); tipTimer = setTimeout(hideTip, 15000);
 }
 makeDraggablePopup('tip', tipEl, () => { clearTimeout(tipTimer); if (!tipEl.hidden) tipTimer = setTimeout(hideTip, 15000); }, () => clearTimeout(tipTimer), dismissTipFromPopup);
@@ -791,7 +931,7 @@ function genTestForecast(){
       hourly.precipitation.push(r1(mm)); hourly.snowfall.push(r1(snow));
       hourly.precipitation_probability.push(Math.round(clamp(40 * g + (wet ? 20 : 0) + rand(-10, 10), 0, 100)));
       hourly.cloud_cover.push(Math.round(clamp(cloudBase + g * 40 + rand(-15, 15), 0, 100)));
-      hourly.weather_code.push(mm > 0.05 ? (snow > 0 ? 73 : 61) : 0);
+      hourly.weather_code.push(mm > 1.6 && Math.abs(h - stormH) < 1.5 ? 95 : (mm > 0.05 ? (snow > 0 ? 73 : 61) : 0));
       const wind = clamp(windBase + windGust * Math.max(0, Math.sin(h / 24 * 6.28)) + rand(-3, 3), 0, 48);
       hourly.wind_speed_10m.push(r1(wind)); hourly.wind_gusts_10m.push(r1(wind + rand(2, 12)));
       hourly.wind_direction_10m.push(Math.round(((dir0 + dirDrift * (h / 23) + rand(-15, 15)) % 360 + 360) % 360));
