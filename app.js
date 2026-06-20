@@ -156,6 +156,7 @@ function pickInk([r,g,b]){
   const L = 0.2126*s(r) + 0.7152*s(g) + 0.0722*s(b);
   return (1.05/(L+0.05)) > ((L+0.05)/0.05) ? '#fff' : '#000';
 }
+const inkRGB = ink => ink === '#fff' ? '255,255,255' : '0,0,0';
 
 /* ---------- Precipitation: probability (opacity) + intensity (style) ---------- */
 const mmToIn = mm => mm / 25.4;
@@ -522,7 +523,7 @@ function cellEl(di, h){
   const thunder = isThunder(cell);
   const windy = !kind && (cell.windMph || 0) >= WIND_MIN;   // dry + notably windy
   const hot = !kind && !windy && cToF(cell.c) >= 95;        // wind wins over shimmer on hot, dry, windy hours
-  if (thunder || hot || windy) fx.fxCells.push({ el, di, h, thunder, hot, windy, wind: cell.windMph || 0, dir: cell.windDir });
+  if (thunder || hot || windy) fx.fxCells.push({ el, di, h, ink, thunder, hot, windy, wind: cell.windMph || 0, dir: cell.windDir });
 
   const num = cellNumber(cell);
   if (num != null){
@@ -678,7 +679,7 @@ function drawFlakeSlot(color){
 
 function buildParticles(cell){
   const { w, h, kind } = cell;
-  cell.col = cell.ink === '#fff' ? '255,255,255' : '0,0,0';
+  cell.col = inkRGB(cell.ink);
   cell.alpha = 0.30 + 0.55 * Math.min(1, kind.pop / 100);
   cell.windRad = precipSlantRad(cell.wind, cell.dir);   // fall slant from this hour's E/W wind component
   const areaScale = Math.max(0.45, Math.min(2.4, (w * h) / REF_AREA));
@@ -816,6 +817,7 @@ function layoutAmbient(g){
   for (const fc of fx.fxCells){
     const r = fc.el.getBoundingClientRect();
     fc.x = r.left - g.left; fc.y = r.top - g.top; fc.w = r.width; fc.h = r.height;
+    fc.col = inkRGB(fc.ink);
     if (fc.hot) fx.hot.push(fc);
     if (fc.thunder) fx.thunder.push(fc);
     if (fc.windy){
@@ -940,7 +942,7 @@ function drawWindField(dt, gust){
       if (a < 0.004) continue;
       ctx.beginPath();
       ctx.lineWidth = p.lw;
-      ctx.strokeStyle = `rgba(248,250,255,${a.toFixed(3)})`;
+      ctx.strokeStyle = `rgba(${fc.col},${a.toFixed(3)})`;
       ctx.moveTo(fc.x + p.px, fc.y + p.py);
       ctx.lineTo(fc.x + p.x, fc.y + p.y);
       ctx.stroke();
@@ -953,8 +955,9 @@ function drawWindField(dt, gust){
 function drawHeatShimmer(){
   if (!fx.hot.length) return;
   const ctx = fx.ctx;
-  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+  ctx.save(); ctx.lineWidth = 2; ctx.lineCap = 'round';
   for (const fc of fx.hot){
+    ctx.globalCompositeOperation = fc.ink === '#fff' ? 'lighter' : 'source-over';
     ctx.save(); ctx.beginPath(); ctx.rect(fc.x, fc.y, fc.w, fc.h); ctx.clip();
     for (let i = 0; i < 3; i++){
       const phase = i * 1.9 + fc.x * 0.05;
@@ -968,7 +971,7 @@ function drawHeatShimmer(){
         const yy = yB + Math.sin(xx * 0.22 + fx.t * 3 + phase) * amp;
         xx === 0 ? ctx.moveTo(fc.x + xx, yy) : ctx.lineTo(fc.x + xx, yy);
       }
-      ctx.strokeStyle = `rgba(255,240,210,${a.toFixed(3)})`; ctx.stroke();
+      ctx.strokeStyle = `rgba(${fc.col},${a.toFixed(3)})`; ctx.stroke();
     }
     ctx.restore();
   }
@@ -1118,7 +1121,7 @@ function showTip(di, h, el){
   if (cell.windMph != null) bits.push(`· wind ${Math.round(cell.windMph)} mph`);
   const head = place.name && place.name !== '—' ? `<span class="tip-place">${place.name}</span>` : '';
   let why = '';
-  if (settings.view === 'run'){
+  if (settings.view === 'run' && testActive){
     const rows = runBreakdown(cell)
       .map(r => `${r.label}: ${r.val} <b>${r.s == null ? '—' : r.s.toFixed(2)}</b>`)
       .join('<br>');
