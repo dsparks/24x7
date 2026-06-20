@@ -144,9 +144,9 @@ body{
 .legend{
   position:fixed;z-index:55;
   top:90%;left:50%;transform:translate(-50%,-50%);
-  display:flex;align-items:center;gap:8px;
+  display:flex;flex-direction:column;align-items:stretch;gap:4px;
   background:rgba(17,21,28,.96);border:1px solid var(--line);
-  border-radius:999px;padding:6px 12px;
+  border-radius:12px;padding:6px 10px 7px;
   box-shadow:0 8px 24px rgba(0,0,0,.45);backdrop-filter:blur(8px);
   pointer-events:auto;
   touch-action:none;
@@ -155,7 +155,8 @@ body{
 }
 .legend.dragging{cursor:grabbing}
 .legend[hidden]{display:none}
-.legend .legend-title{font-size:11px;color:var(--ink);font-weight:700;white-space:nowrap}
+.legend .legend-title{font-size:11px;color:var(--ink);font-weight:700;line-height:1;text-align:center;white-space:nowrap}
+.legend .legend-scale{display:flex;align-items:center;gap:8px}
 .legend .bar{width:min(46vw,180px);height:10px;border-radius:6px;border:1px solid rgba(255,255,255,.15)}
 .legend .lo,.legend .hi{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
 
