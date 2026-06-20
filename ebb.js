@@ -32,6 +32,12 @@ function fmtHourLong(h){
   if (h === 0) return '12 AM'; if (h === 12) return '12 PM';
   return h < 12 ? `${h} AM` : `${h - 12} PM`;
 }
+function fmtClockMinute(h, m){
+  if (clock24()) return `${pad(h)}:${pad(m)}`;
+  const ap = h < 12 ? 'AM' : 'PM';
+  const hh = h % 12 || 12;
+  return `${hh}:${pad(m)} ${ap}`;
+}
 const COMPASS = ['N','NE','E','SE','S','SW','W','NW'];
 const compass8 = deg => deg == null ? '' : COMPASS[Math.round(((deg % 360) + 360) % 360 / 45) % 8];
 const THUNDER_CODES = new Set([95, 96, 99]);
@@ -148,6 +154,7 @@ function toDays(j){
       gust: h.wind_gusts_10m?.[i] ?? 0,
       isDay: h.is_day?.[i] ?? 1,
       tideFt: null,
+      tideMark: null,
     };
   }
   const keys = [...byDate.keys()].sort().slice(0, 7);
@@ -184,8 +191,33 @@ async function fetchTides(stationId, start){
   (j.predictions || []).forEach(p => map.set(p.t.replace(' ', 'T').slice(0, 13), +p.v));
   return map;
 }
+async function fetchTideMarks(stationId, start){
+  const bd = `${start.getFullYear()}${pad(start.getMonth() + 1)}${pad(start.getDate())}`;
+  const url = `https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=predictions&application=ebb&datum=MLLW&interval=hilo&units=english&time_zone=lst_ldt&format=json&station=${stationId}&begin_date=${bd}&range=168`;
+  const j = await (await fetch(url)).json();
+  const marks = [];
+  (j.predictions || []).forEach(p => {
+    const iso = p.t?.replace(' ', 'T');
+    const type = p.type === 'H' || p.type === 'L' ? p.type : null;
+    const minute = +(iso || '').slice(14, 16);
+    if (iso && type && Number.isFinite(minute)) marks.push({ iso, type, minute });
+  });
+  return marks;
+}
 function applyTideMap(days, map){
   days.forEach(d => d.cells.forEach(c => { if (c) c.tideFt = map.get(c.iso.slice(0, 13)) ?? null; }));
+}
+function clearTideMarks(days){
+  days.forEach(d => d.cells.forEach(c => { if (c) c.tideMark = null; }));
+}
+function applyTideMarks(days, marks){
+  clearTideMarks(days);
+  const byHour = new Map();
+  days.forEach((d, di) => d.cells.forEach((c, h) => { if (c) byHour.set(c.iso.slice(0, 13), { c, di, h }); }));
+  marks.forEach(m => {
+    const hit = byHour.get(m.iso.slice(0, 13));
+    if (hit) hit.c.tideMark = { type: m.type, minute: clamp(m.minute, 0, 59), di: hit.di, h: hit.h };
+  });
 }
 function synthTides(days, seedLon){
   const ph = (seedLon || 0) * 0.7, amp = 2.0 + Math.abs((seedLon || 0) % 7) * 0.25;   // ~2–4 ft
@@ -194,6 +226,39 @@ function synthTides(days, seedLon){
     const t = di * 24 + h;
     c.tideFt = amp + amp * Math.sin(2 * Math.PI * t / 12.42 + ph) + amp * 0.32 * Math.sin(2 * Math.PI * t / 12.0 + ph * 1.3);
   }));
+}
+function synthTideMarks(days){
+  clearTideMarks(days);
+  const flat = [];
+  days.forEach((d, di) => d.cells.forEach((c, h) => { if (c && c.tideFt != null) flat.push({ c, di, h, v: c.tideFt }); }));
+  for (let i = 1; i < flat.length - 1; i++){
+    const a = flat[i - 1], b = flat[i], c = flat[i + 1];
+    const high = b.v >= a.v && b.v > c.v, low = b.v <= a.v && b.v < c.v;
+    if (!high && !low) continue;
+    const denom = a.v - 2 * b.v + c.v;
+    const offset = Math.abs(denom) > 0.0001 ? clamp(0.5 * (a.v - c.v) / denom, -0.49, 0.49) : 0;
+    b.c.tideMark = { type: high ? 'H' : 'L', minute: clamp(Math.round((0.5 + offset) * 60), 0, 59), di: b.di, h: b.h };
+  }
+}
+function refineTideDirectionFromMarks(days){
+  const flat = [], marks = [];
+  days.forEach((d, di) => d.cells.forEach((c, h) => {
+    if (!c) return;
+    const t = di * 24 + h;
+    flat.push({ c, t });
+    if (c.tideMark) marks.push({ t: t + (c.tideMark.minute || 0) / 60, type: c.tideMark.type });
+  }));
+  if (!marks.length) return;
+  marks.sort((a, b) => a.t - b.t);
+  let mi = 0;
+  for (const f of flat){
+    if (f.c.tideFt == null) continue;
+    const sampleT = f.t + 0.5; // Label the cell by the middle of its represented hour.
+    while (mi < marks.length && marks[mi].t < sampleT) mi++;
+    const prev = marks[mi - 1], next = marks[mi];
+    if (prev) f.c.rising = prev.type === 'L';
+    else if (next) f.c.rising = next.type === 'H';
+  }
 }
 function enrichTide(days){
   let lo = Infinity, hi = -Infinity;
@@ -206,6 +271,7 @@ function enrichTide(days){
     else { c.waterFrac = 0.16 + ((c.tideFt - lo) / range) * 0.66; c.rising = prev == null ? null : c.tideFt > prev; }
     if (c.tideFt != null) prev = c.tideFt;
   }));
+  refineTideDirectionFromMarks(days);
 }
 function enrichSun(days, lat, lon, offset){
   days.forEach(d => d.cells.forEach(c => {
@@ -235,10 +301,19 @@ async function load(lat, lon){
       const map = await fetchTides(st.id, start);
       if (seq !== loadSeq) return;
       applyTideMap(days, map);
+      try {
+        const marks = await fetchTideMarks(st.id, start);
+        if (seq !== loadSeq) return;
+        applyTideMarks(days, marks);
+      } catch {
+        synthTideMarks(days);
+      }
       if (![...days].some(d => d.cells.some(c => c && c.tideFt != null))) throw new Error('empty');
+      if (![...days].some(d => d.cells.some(c => c && c.tideMark))) synthTideMarks(days);
       setTideSrc(`Tide: ${st.name}`);
     } catch {
       synthTides(days, lon);
+      synthTideMarks(days);
       setTideSrc('Tide: simulated (no NOAA station)');
     }
     enrichTide(days);
@@ -252,6 +327,7 @@ function loadTest(){
   days = parsed.days;
   enrichSun(days, 41.5, -71.3, parsed.offset);    // Narragansett-ish, just for sun timing
   synthTides(days, -71.3);
+  synthTideMarks(days);
   enrichTide(days);
   setTideSrc('Tide: simulated (test)');
   lastCoords = null;
@@ -442,11 +518,49 @@ function drawCell(fc, dt){
  * 3 = layered swell, chop, foam, and streaks. */
 const CHOP_VERSION = 2;
 const waveTime = () => settings.waves === 'still' ? 0 : fx.t;
+function hash01(...vals){
+  const n = Math.sin(vals.reduce((a, v, i) => a + (v + 1) * (37.719 + i * 19.913), 0)) * 43758.5453;
+  return n - Math.floor(n);
+}
+function markRand(fc, salt){ return hash01(fc.di, fc.h, salt); }
 
 function drawWater(fc, waterTop){
   if (CHOP_VERSION === 1) return drawWaterV1(fc, waterTop);
   if (CHOP_VERSION === 2) return drawWaterV2(fc, waterTop);
   return drawWaterV3(fc, waterTop);
+}
+function waterSurfaceAt(fc, waterTop, localX){
+  const c = fc.cell, w = fc.w, h = fc.hgt;
+  const wind = c.windMph || 0, gust = c.gust || 0;
+  const t = waveTime();
+  if (CHOP_VERSION === 2){
+    const wf = clamp((wind + gust * 0.3) / 30, 0, 1);
+    const roll = rollDir(c.windDir);
+    const amp = clamp(0.5 + (wind + gust * 0.4) * 0.16, 0.5, h * 0.16);
+    const k = (2 * Math.PI) / Math.max(14, w * (0.62 - wf * 0.34));
+    const travel = t * (1.1 + wind * 0.12) * roll;
+    const bob = t * 1.6;
+    const sharp = 0.5 + wf * 0.45;
+    const s = Math.sin(k * localX - travel);
+    const peaked = Math.sign(s) * Math.pow(Math.abs(s), 1 / (1 + sharp));
+    return waterTop + amp * (peaked * 0.82 + 0.3 * Math.sin(2.4 * k * localX + bob));
+  }
+  if (CHOP_VERSION === 3){
+    const wf = clamp((wind + gust * 0.35) / 34, 0, 1);
+    const roll = rollDir(c.windDir);
+    const swellAmp = clamp(0.35 + wind * 0.06, 0.35, h * 0.075);
+    const chopAmp = clamp(wf * h * 0.07, 0, h * 0.095);
+    const swellK = (2 * Math.PI) / Math.max(26, w * 1.12);
+    const chopK = (2 * Math.PI) / Math.max(8, w * (0.30 - wf * 0.12));
+    const swell = Math.sin(swellK * localX - t * (0.75 + wind * 0.045) * roll);
+    const chop = Math.sin(chopK * localX - t * (1.9 + wind * 0.15) * roll + Math.sin(swellK * localX) * 0.8);
+    return waterTop + swellAmp * swell + chopAmp * Math.sign(chop) * Math.pow(Math.abs(chop), 0.62);
+  }
+  const dirSign = (c.windDir == null) ? 1 : (windToward(c.windDir).x >= 0 ? 1 : -1);
+  const amp = clamp(0.4 + (wind + gust * 0.3) * 0.16, 0.4, h * 0.12);
+  const k = (2 * Math.PI) / Math.max(18, w * 0.6);
+  const spd = (0.5 + wind * 0.06) * dirSign;
+  return waterTop + amp * Math.sin(k * localX + t * spd) + amp * 0.4 * Math.sin(2.2 * k * localX - t * spd * 1.4);
 }
 
 // chop 1.0 — preserved so we can flip back if we prefer it.
@@ -605,6 +719,59 @@ function drawWaterV3(fc, waterTop){
     }
   }
 }
+const TIDE_MARK_STYLES = [
+  'gold / cyan',
+  'ivory / magenta',
+  'lime / lavender',
+  'orange / aqua',
+  'white / cobalt',
+  'coral / mint',
+  'lemon / blue',
+];
+const TIDE_MARK_PALETTES = [
+  { high: '#ffd36a', low: '#74d8ff' },
+  { high: '#fff7a8', low: '#ff4fd8' },
+  { high: '#b7ff3c', low: '#b990ff' },
+  { high: '#ff9f1c', low: '#00e5ff' },
+  { high: '#ffffff', low: '#3d7cff' },
+  { high: '#ff5a3d', low: '#7cffc4' },
+  { high: '#f6ff00', low: '#00a2ff' },
+];
+function colorParts(hex){
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function tideMarkColors(type, di = 0){
+  const p = TIDE_MARK_PALETTES[((di % TIDE_MARK_PALETTES.length) + TIDE_MARK_PALETTES.length) % TIDE_MARK_PALETTES.length];
+  const main = type === 'H' ? p.high : p.low;
+  const [r, g, b] = colorParts(main);
+  return { main, soft: `rgba(${r},${g},${b},.34)`, text: '#081018' };
+}
+function drawTideTapLocator(ctx, fc){
+  const mark = fc.cell.tideMark;
+  if (!mark) return;
+  const c = tideMarkColors(mark.type, fc.di);
+  const localX = clamp((mark.minute || 0) / 60, 0.04, 0.96) * fc.w;
+  const x = fc.x + localX;
+  const waterTop = fc.y + (1 - (fc.cell.waterFrac ?? 0.45)) * fc.hgt;
+  const pulse = 0.5 + 0.5 * Math.sin(fx.t * 5.5);
+  ctx.save();
+  ctx.strokeStyle = c.main;
+  ctx.lineWidth = 1.2 + pulse * 0.5;
+  ctx.shadowColor = c.soft;
+  ctx.shadowBlur = 8 + pulse * 5;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath(); ctx.moveTo(x, fc.y + 2); ctx.lineTo(x, fc.y + fc.hgt - 2); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = c.main;
+  ctx.beginPath(); ctx.arc(x, waterTop, 2.2 + pulse * 1.5, 0, 6.2832); ctx.fill();
+  ctx.restore();
+}
+function drawSelectedDayTideLocators(ctx, di){
+  for (const fc of fx.cells){
+    if (fc.di === di) drawTideTapLocator(ctx, fc);
+  }
+}
 function drawNowLine(){
   const now = new Date(), hNow = now.getHours(), frac = now.getMinutes() / 60;
   const fc = fx.cells.find(c => c.di === 0 && c.h === hNow); if (!fc) return;
@@ -629,6 +796,7 @@ function drawSelectedCell(){
   ctx.lineWidth = 1;
   ctx.shadowBlur = 0;
   ctx.strokeRect(fc.x + 2.5, fc.y + 2.5, Math.max(0, fc.w - 5), Math.max(0, fc.hgt - 5));
+  drawSelectedDayTideLocators(ctx, selectedCell.di);
   ctx.restore();
 }
 function frame(now){
@@ -731,6 +899,7 @@ function showTip(di, h){
     const arrow = c.rising == null ? '' : (c.rising ? `<span class="tide-rise">▲ rising</span>` : `<span class="tide-fall">▼ falling</span>`);
     bits.push(`· tide ${c.tideFt.toFixed(1)} ft ${arrow}`);
   }
+  if (c.tideMark) bits.push(`· ${c.tideMark.type === 'H' ? 'high' : 'low'} tide ${fmtClockMinute(h, c.tideMark.minute || 0)} · colors: ${TIDE_MARK_STYLES[di % TIDE_MARK_STYLES.length]}`);
   bits.push(`· wind ${Math.round(c.windMph)}${c.windDir != null ? ' ' + compass8(c.windDir) : ''} mph`);
   if ((c.pop || 0) > 10 && isThunder(c)) bits.push(`· ${c.pop | 0}% thunderstorm`);
   else if ((c.pop || 0) > 10 && ((c.precipMm || 0) > 0 || (c.snowCm || 0) > 0)) bits.push(`· ${c.pop | 0}% ${c.snowCm > 0 ? 'snow' : 'rain'}`);
