@@ -551,12 +551,13 @@ function cellEl(di, h){
   const ink = effInk(di, h, c);           // contrast vs the night-shaded color
 
   const kind = precipKind(cell);
-  if (kind) fx.cells.push({ el, kind, ink, wind: cell.windMph || 0, dir: cell.windDir });   // canvas layer draws the particles
+  const showPrecipFx = kind && (kind.pop || 0) > 10;
+  if (showPrecipFx) fx.cells.push({ el, kind, ink, wind: cell.windMph || 0, dir: cell.windDir });   // canvas layer draws the particles
 
   // ambient effects (measured + drawn by the fx layer)
-  const thunder = isThunder(cell);
-  const windy = !kind && (cell.windMph || 0) >= WIND_MIN;   // dry + notably windy
-  const hot = !kind && !windy && cToF(cell.c) >= 95;        // wind wins over shimmer on hot, dry, windy hours
+  const thunder = showPrecipFx && isThunder(cell);
+  const windy = !showPrecipFx && (cell.windMph || 0) >= WIND_MIN;   // dry + notably windy
+  const hot = !showPrecipFx && !windy && cToF(cell.c) >= 95;        // wind wins over shimmer on hot, dry, windy hours
   if (thunder || hot || windy) fx.fxCells.push({ el, di, h, ink, thunder, hot, windy, wind: cell.windMph || 0, dir: cell.windDir });
 
   const num = cellNumber(cell);
@@ -626,7 +627,7 @@ const SNOW_N  = [0,    5,    9,   13,   17,   17];
 const SNOW_R  = [0,  0.9,  1.1,  1.4,  1.7,  1.7];
 const REF_AREA = 40 * 34;                 // a "typical" cell, for scaling counts
 const FOG_AMP = 0.6;                      // mist wave height as a fraction of cell height
-const FOG_WIDTH = 15, FOG_OPACITY = 0.025; // mist strand line-width & opacity
+const FOG_WIDTH = 15, FOG_OPACITY = 0.04;  // mist strand line-width & opacity
 // Wind tilts falling precip by the real slant angle: rain matches the wind's
 // horizontal speed while falling at terminal velocity, so angle-from-vertical =
 // atan(wind / terminal). V_TERM ≈ 15 mph (~6.7 m/s) for typical raindrops.
