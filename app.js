@@ -1098,6 +1098,7 @@ function legendInfo(){
 }
 function showLegend(){
   const info = legendInfo();
+  legendEl.querySelector('.legend-title').textContent = settings.view === 'run' ? 'Run Index' : 'Temperature';
   legendEl.querySelector('.bar').style.background = info.grad;
   legendEl.querySelector('.lo').textContent = info.lo;
   legendEl.querySelector('.hi').textContent = info.hi;
@@ -1441,10 +1442,17 @@ function placeItem(name, active, onSelect, onDelete){
   }
   return row;
 }
+function currentLocationLabel(){
+  const placeholder = new Set(['—', 'Locating…', 'Current location', 'Location unavailable', 'Location blocked']);
+  if (settings.activeIdx == null && place.name && !placeholder.has(place.name)){
+    return '📍 ' + place.name + (place.sub ? `, ${place.sub}` : '');
+  }
+  return '📍 My location';
+}
 function renderPlaceList(){
   const host = $('#placeList'); if (!host) return;
   host.innerHTML = '';
-  host.appendChild(placeItem('📍 My location', settings.activeIdx == null, () => switchTo(null)));
+  host.appendChild(placeItem(currentLocationLabel(), settings.activeIdx == null, () => switchTo(null)));
   settings.places.forEach((p, i) =>
     host.appendChild(placeItem(
       p.name + (p.admin ? `, ${p.admin}` : ''),
@@ -1591,10 +1599,13 @@ function locate(){
 }
 async function reverseName(lat, lon){
   try {
-    const url = `https://geocoding-api.open-meteo.com/v1/search?latitude=${lat}&longitude=${lon}&count=1&language=en&format=json`;
+    const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=10&addressdetails=1`;
     const j = await (await fetch(url)).json();
-    const r = j.results?.[0];
-    if (r) setPlace(r.name, [r.admin1, r.country_code].filter(Boolean).join(', '));
+    const a = j.address || {};
+    const name = a.city || a.town || a.village || a.hamlet || a.municipality || a.suburb || a.county || j.name;
+    const country = a.country_code ? a.country_code.toUpperCase() : '';
+    const sub = [a.state, country].filter(Boolean).join(', ');
+    if (name) setPlace(name, sub);
   } catch { /* name is cosmetic; ignore */ }
 }
 

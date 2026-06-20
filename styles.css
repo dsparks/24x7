@@ -155,6 +155,7 @@ body{
 }
 .legend.dragging{cursor:grabbing}
 .legend[hidden]{display:none}
+.legend .legend-title{font-size:11px;color:var(--ink);font-weight:700;white-space:nowrap}
 .legend .bar{width:min(46vw,180px);height:10px;border-radius:6px;border:1px solid rgba(255,255,255,.15)}
 .legend .lo,.legend .hi{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
 
