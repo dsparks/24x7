@@ -283,11 +283,18 @@ function resetPopupPosition(kind, el, fallback){
 }
 function makeDraggablePopup(kind, el, afterDrag, beforeDrag, fallback){
   let drag = null, lastTap = 0;
+  const TAP_SLOP = 8;
   el.addEventListener('pointerdown', e => {
     if (e.button != null && e.button !== 0) return;
     beforeDrag?.();
     const r = el.getBoundingClientRect();
-    drag = { dx: e.clientX - (r.left + r.width / 2), dy: e.clientY - (r.top + r.height / 2), moved: false };
+    drag = {
+      sx: e.clientX,
+      sy: e.clientY,
+      dx: e.clientX - (r.left + r.width / 2),
+      dy: e.clientY - (r.top + r.height / 2),
+      moved: false,
+    };
     el.classList.add('dragging');
     el.setPointerCapture?.(e.pointerId);
     e.preventDefault();
@@ -295,7 +302,13 @@ function makeDraggablePopup(kind, el, afterDrag, beforeDrag, fallback){
   });
   el.addEventListener('pointermove', e => {
     if (!drag) return;
-    drag.moved = true;
+    const dist = Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy);
+    if (dist > TAP_SLOP) drag.moved = true;
+    if (!drag.moved){
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     setPopupPoint(el, e.clientX - drag.dx, e.clientY - drag.dy);
     e.preventDefault();
     e.stopPropagation();
