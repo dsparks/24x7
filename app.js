@@ -1097,8 +1097,12 @@ function legendInfo(){
   const lab = f => `${Math.round(unitIsF() ? f : (f - 32) * 5 / 9)}${unitGlyph()}`;
   return { grad: gradFrom(t => tempRGB(loF + t * (hiF - loF)), 32), lo: lab(loF), hi: lab(hiF) };
 }
+function legendPlace(){
+  return place.name && place.name !== '—' ? place.name : 'Current location';
+}
 function showLegend(){
   const info = legendInfo();
+  legendEl.querySelector('.legend-place').textContent = legendPlace();
   legendEl.querySelector('.legend-title').textContent = settings.view === 'run' ? 'Run Index' : 'Temperature';
   legendEl.querySelector('.bar').style.background = info.grad;
   legendEl.querySelector('.lo').textContent = info.lo;
@@ -1122,8 +1126,17 @@ function toggleView(){
   showLegend();                                  // shows the new scale so the switch is legible
   if (!sheetEl.hidden) syncSheet();
 }
+function cycleLocation(dir){
+  const count = settings.places.length + 1;      // current location + saved places
+  if (count <= 1) return false;
+  const cur = settings.activeIdx == null ? 0 : settings.activeIdx + 1;
+  const next = (cur + dir + count) % count;
+  switchTo(next === 0 ? null : next - 1);
+  showLegend();
+  return true;
+}
 
-// Grid gestures: long-press → legend; horizontal swipe → switch view.
+// Grid gestures: long-press → legend; horizontal swipe → location; vertical swipe → view.
 let lpTimer = 0, lpFired = false, swiped = false, lpX = 0, lpY = 0;
 gridEl.addEventListener('pointerdown', e => {
   lpFired = false; swiped = false; lpX = e.clientX; lpY = e.clientY;
@@ -1135,7 +1148,14 @@ gridEl.addEventListener('pointermove', e => {
 gridEl.addEventListener('pointerup', e => {
   clearTimeout(lpTimer);
   const dx = e.clientX - lpX, dy = e.clientY - lpY;
-  if (Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.4){ swiped = true; toggleView(); }  // horizontal swipe
+  const ax = Math.abs(dx), ay = Math.abs(dy);
+  if (ax > 55 && ax > ay * 1.4){
+    swiped = true;
+    cycleLocation(dx < 0 ? 1 : -1);
+  } else if (ay > 55 && ay > ax * 1.4){
+    swiped = true;
+    toggleView();
+  }
 });
 gridEl.addEventListener('pointercancel', () => clearTimeout(lpTimer));
 function showTip(di, h, el){
@@ -1418,7 +1438,11 @@ enableSheetSwipe(aboutEl.querySelector('.sheet-card'), () => { aboutEl.hidden = 
 })();
 
 /* ---------- Location: geolocation + Open-Meteo geocoding ---------- */
-function setPlace(name, sub){ place = { name, sub: sub || '' }; if (!sheetEl.hidden) syncSheet(); }
+function setPlace(name, sub){
+  place = { name, sub: sub || '' };
+  if (!sheetEl.hidden) syncSheet();
+  if (!legendEl.hidden) legendEl.querySelector('.legend-place').textContent = legendPlace();
+}
 
 async function geocode(q){
   const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=6&language=en&format=json`;

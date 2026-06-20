@@ -155,7 +155,9 @@ body{
 }
 .legend.dragging{cursor:grabbing}
 .legend[hidden]{display:none}
-.legend .legend-title{font-size:11px;color:var(--ink);font-weight:700;line-height:1;text-align:center;white-space:nowrap}
+.legend .legend-place,.legend .legend-title{display:block;width:100%;text-align:center;line-height:1;white-space:nowrap}
+.legend .legend-place{overflow:hidden;text-overflow:ellipsis;font-size:11px;color:var(--ink);font-weight:700}
+.legend .legend-title{font-size:11px;color:var(--muted);font-weight:600}
 .legend .legend-scale{display:flex;align-items:center;gap:8px}
 .legend .bar{width:min(46vw,180px);height:10px;border-radius:6px;border:1px solid rgba(255,255,255,.15)}
 .legend .lo,.legend .hi{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
