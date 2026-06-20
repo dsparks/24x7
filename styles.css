@@ -124,10 +124,14 @@ body{
   font-size:13px;line-height:1.35;
   box-shadow:0 10px 30px rgba(0,0,0,.45);
   backdrop-filter:blur(8px);
-  pointer-events:none;
+  pointer-events:auto;
+  touch-action:none;
+  cursor:grab;
+  user-select:none;
   max-width:min(92vw,420px);
   text-align:center;
 }
+.tip.dragging{cursor:grabbing}
 /* portrait: float over the wee-hours rows (top) instead of the relevant evening rows */
 .tip.top{bottom:auto;top:calc(clamp(64px,11vh,150px) - var(--tip-shift,0px))}
 .tip b{font-weight:700}
@@ -139,13 +143,17 @@ body{
 /* ---------- Color legend ---------- */
 .legend{
   position:fixed;z-index:55;
-  top:max(10px,env(safe-area-inset-top));left:50%;transform:translateX(-50%);
+  top:90%;left:50%;transform:translate(-50%,-50%);
   display:flex;align-items:center;gap:8px;
   background:rgba(17,21,28,.96);border:1px solid var(--line);
   border-radius:999px;padding:6px 12px;
   box-shadow:0 8px 24px rgba(0,0,0,.45);backdrop-filter:blur(8px);
-  pointer-events:none;
+  pointer-events:auto;
+  touch-action:none;
+  cursor:grab;
+  user-select:none;
 }
+.legend.dragging{cursor:grabbing}
 .legend[hidden]{display:none}
 .legend .bar{width:min(46vw,180px);height:10px;border-radius:6px;border:1px solid rgba(255,255,255,.15)}
 .legend .lo,.legend .hi{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}

@@ -20,6 +20,7 @@ const DEFAULTS = {
   showNumbers: true,
   nightMax: 0.75,       // peak night-shade darkness (0–1)
   runCurves: null,      // per-dimension preference curves (validated in loadSettings)
+  popupPos: null,       // remembered popup centers as viewport fractions: { legend:{x,y}, tip:{x,y} }
   places: [],           // saved locations [{ lat, lon, name, admin }]
   activeIdx: null,      // index into places, or null = use my location
 };
@@ -69,6 +70,7 @@ function loadSettings(){
     const raw = (Array.isArray(c) && c.length === dimPoints(d)) ? c.map(Number) : d.def;
     s.runCurves[d.key] = raw.map(snapTier);     // align stored values to the snap tiers
   }
+  if (!s.popupPos || typeof s.popupPos !== 'object') s.popupPos = {};
   if (!Array.isArray(s.places)) s.places = [];
   if (s.loc){                                    // migrate legacy single manual location
     const dup = s.places.findIndex(p => p.lat === s.loc.lat && p.lon === s.loc.lon);
@@ -242,6 +244,94 @@ const $ = sel => document.querySelector(sel);
 const gridEl = $('#grid');
 const tipEl = $('#tip');
 const sheetEl = $('#settings');
+
+function clampPopupPoint(el, x, y){
+  const r = el.getBoundingClientRect();
+  const margin = 8;
+  const halfW = Math.min(r.width / 2 || 0, Math.max(0, innerWidth / 2 - margin));
+  const halfH = Math.min(r.height / 2 || 0, Math.max(0, innerHeight / 2 - margin));
+  return {
+    x: Math.max(margin + halfW, Math.min(innerWidth - margin - halfW, x)),
+    y: Math.max(margin + halfH, Math.min(innerHeight - margin - halfH, y)),
+  };
+}
+function setPopupPoint(el, x, y){
+  const p = clampPopupPoint(el, x, y);
+  el.style.left = p.x + 'px';
+  el.style.top = p.y + 'px';
+  el.style.right = 'auto';
+  el.style.bottom = 'auto';
+  el.style.transform = 'translate(-50%,-50%)';
+}
+function applyPopupPosition(kind, el, fallback){
+  const saved = settings.popupPos?.[kind] || fallback;
+  if (!saved) return;
+  setPopupPoint(el, saved.x * innerWidth, saved.y * innerHeight);
+}
+function resetPopupPosition(kind, el, fallback){
+  delete settings.popupPos[kind];
+  saveSettings();
+  if (fallback) setPopupPoint(el, fallback.x * innerWidth, fallback.y * innerHeight);
+  else {
+    el.style.left = '';
+    el.style.top = '';
+    el.style.right = '';
+    el.style.bottom = '';
+    el.style.transform = '';
+  }
+}
+function makeDraggablePopup(kind, el, afterDrag, beforeDrag, fallback){
+  let drag = null, lastTap = 0;
+  el.addEventListener('pointerdown', e => {
+    if (e.button != null && e.button !== 0) return;
+    beforeDrag?.();
+    const r = el.getBoundingClientRect();
+    drag = { dx: e.clientX - (r.left + r.width / 2), dy: e.clientY - (r.top + r.height / 2), moved: false };
+    el.classList.add('dragging');
+    el.setPointerCapture?.(e.pointerId);
+    e.preventDefault();
+    e.stopPropagation();
+  });
+  el.addEventListener('pointermove', e => {
+    if (!drag) return;
+    drag.moved = true;
+    setPopupPoint(el, e.clientX - drag.dx, e.clientY - drag.dy);
+    e.preventDefault();
+    e.stopPropagation();
+  });
+  function finishDrag(e){
+    if (!drag) return;
+    const now = performance.now();
+    const doubleTap = !drag.moved && now - lastTap < 320;
+    if (doubleTap) resetPopupPosition(kind, el, fallback);
+    else {
+      const r = el.getBoundingClientRect();
+      settings.popupPos[kind] = {
+        x: (r.left + r.width / 2) / innerWidth,
+        y: (r.top + r.height / 2) / innerHeight,
+      };
+      saveSettings();
+    }
+    el.classList.remove('dragging');
+    el.releasePointerCapture?.(e.pointerId);
+    const moved = drag.moved;
+    drag = null;
+    lastTap = doubleTap || moved ? 0 : now;
+    afterDrag?.(moved);
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  el.addEventListener('pointerup', finishDrag);
+  el.addEventListener('pointercancel', finishDrag);
+  el.addEventListener('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+  });
+}
+function repositionVisiblePopups(){
+  if (!legendEl.hidden) applyPopupPosition('legend', legendEl, LEGEND_DEFAULT_POS);
+  if (!tipEl.hidden) applyPopupPosition('tip', tipEl);
+}
 
 const GEAR = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
 
@@ -953,6 +1043,7 @@ gridEl.addEventListener('click', e => {
 
 /* ---------- Color legend ---------- */
 const legendEl = $('#legend');
+const LEGEND_DEFAULT_POS = { x: 0.5, y: 0.9 };
 let legendTimer = 0;
 function gradFrom(fn, n){
   const stops = [];
@@ -974,9 +1065,15 @@ function showLegend(){
   legendEl.querySelector('.lo').textContent = info.lo;
   legendEl.querySelector('.hi').textContent = info.hi;
   legendEl.hidden = false;
+  applyPopupPosition('legend', legendEl, LEGEND_DEFAULT_POS);
   clearTimeout(legendTimer);
   legendTimer = setTimeout(() => { legendEl.hidden = true; }, 4000);
 }
+
+makeDraggablePopup('legend', legendEl, () => {
+  clearTimeout(legendTimer);
+  legendTimer = setTimeout(() => { legendEl.hidden = true; }, 4000);
+}, () => clearTimeout(legendTimer), LEGEND_DEFAULT_POS);
 
 // Flip between Temp/Rain and Run Index.
 function toggleView(){
@@ -1032,6 +1129,7 @@ function showTip(di, h, el){
   const cellH = gridEl.querySelector('.cell:not(.empty)')?.getBoundingClientRect().height || 0;
   tipEl.style.setProperty('--tip-shift', Math.round(cellH) + 'px');   // nudge up one rectangle
   tipEl.hidden = false;
+  applyPopupPosition('tip', tipEl);
   clearTimeout(tipTimer);
   tipTimer = setTimeout(hideTip, 3200);
 }
@@ -1042,6 +1140,10 @@ function hideTip(){
 document.addEventListener('click', e => {
   if (!e.target.closest('.cell') && !e.target.closest('.tip')) hideTip();
 }, true);
+makeDraggablePopup('tip', tipEl, () => {
+  clearTimeout(tipTimer);
+  tipTimer = setTimeout(hideTip, 3200);
+}, () => clearTimeout(tipTimer));
 
 /* ---------- Settings sheet ---------- */
 function openSheet(){ syncSheet(); sheetEl.hidden = false; }
@@ -1539,9 +1641,10 @@ window.addEventListener('resize', () => {
   rT = setTimeout(() => {
     if ((isPortrait() ? 'p' : 'l') !== orientation) render();   // render() re-lays the canvas
     else layoutFx();                                            // same orientation: just re-measure
+    repositionVisiblePopups();
   }, 120);
 });
-window.addEventListener('orientationchange', () => setTimeout(render, 150));
+window.addEventListener('orientationchange', () => setTimeout(() => { render(); repositionVisiblePopups(); }, 150));
 
 // Live now-line: nudge it along every 30s (hour rollover lands on a fresh refetch).
 setInterval(() => { if (days.length) placeNowLine(); }, 30000);
