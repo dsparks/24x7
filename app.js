@@ -1444,9 +1444,9 @@ function setPlace(name, sub){
   if (!legendEl.hidden) legendEl.querySelector('.legend-place').textContent = legendPlace();
 }
 
-async function geocode(q){
-  const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=6&language=en&format=json`;
-  const r = await fetch(url);
+async function geocode(q, signal){
+  const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=8&language=en&format=json`;
+  const r = await fetch(url, signal ? { signal } : undefined);
   if (!r.ok) throw new Error('search failed');
   const j = await r.json();
   return j.results || [];
@@ -1594,25 +1594,106 @@ function addTestPlace(){
   switchTo(idx);                            // re-rolls even if it was already active
 }
 
-const resultsEl = $('#searchResults');
-$('#searchForm').addEventListener('submit', async e => {
-  e.preventDefault();
-  const q = $('#searchInput').value.trim();
-  if (!q) return;
-  if (isTestQuery(q)){ $('#searchInput').value = ''; resultsEl.hidden = true; addTestPlace(); return; }
+/* ---------- Location search: live, race-safe typeahead ---------- */
+const searchBox = $('#searchBox'), searchInput = $('#searchInput'), searchClear = $('#searchClear'), resultsEl = $('#searchResults');
+let searchSeq = 0;          // monotonic token: only the latest query may render
+let searchAbort = null;     // cancels the in-flight fetch when a newer keystroke arrives
+let searchTimer = 0;
+let hits = [];              // current result objects
+let activeIdx = -1;         // keyboard-highlighted row
+
+const escHtml = s => String(s).replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+const flagOf = cc => (cc && cc.length === 2)
+  ? String.fromCodePoint(...[...cc.toUpperCase()].map(c => 0x1F1E6 + c.charCodeAt(0) - 65))
+  : '📍';
+function highlightMatch(name, q){            // bold the matched run within the city name
+  const i = name.toLowerCase().indexOf(q.toLowerCase());
+  if (i < 0) return escHtml(name);
+  return escHtml(name.slice(0, i)) + '<b>' + escHtml(name.slice(i, i + q.length)) + '</b>' + escHtml(name.slice(i + q.length));
+}
+function openResults(){ resultsEl.hidden = false; searchBox.setAttribute('aria-expanded', 'true'); }
+function closeResults(){
+  resultsEl.hidden = true; resultsEl.innerHTML = ''; hits = []; activeIdx = -1;
+  searchBox.setAttribute('aria-expanded', 'false');
+  searchInput.removeAttribute('aria-activedescendant');
+}
+function showMsg(text){ openResults(); resultsEl.innerHTML = `<li class="result-msg">${escHtml(text)}</li>`; hits = []; activeIdx = -1; }
+
+function renderHits(items, q){
+  hits = items; activeIdx = -1;
+  resultsEl.innerHTML = '';
+  items.forEach((r, i) => {
+    const sub = [r.admin1, r.country].filter(Boolean).join(', ');
+    const li = document.createElement('li');
+    li.className = 'result'; li.id = 'sr-' + i; li.setAttribute('role', 'option');
+    li.innerHTML = `<span class="r-flag">${flagOf(r.country_code)}</span>`
+      + `<span class="r-text"><span class="r-name">${highlightMatch(r.name, q)}</span>`
+      + (sub ? `<span class="r-sub">${escHtml(sub)}</span>` : '') + `</span>`;
+    li.addEventListener('pointerdown', e => { e.preventDefault(); choose(i); });   // pointerdown beats input blur
+    resultsEl.appendChild(li);
+  });
+  openResults();
+}
+function setActive(i){
+  const rows = resultsEl.querySelectorAll('.result');
+  if (!rows.length) return;
+  activeIdx = (i + rows.length) % rows.length;
+  rows.forEach((el, j) => el.setAttribute('aria-selected', j === activeIdx ? 'true' : 'false'));
+  const el = rows[activeIdx];
+  el.scrollIntoView({ block: 'nearest' });
+  searchInput.setAttribute('aria-activedescendant', el.id);
+}
+function choose(i){
+  const r = hits[i]; if (!r) return;
+  addPlace(r); resetSearch();
+}
+function resetSearch(){ searchInput.value = ''; searchClear.hidden = true; closeResults(); }
+
+async function runSearch(q){
+  const seq = ++searchSeq;
+  searchAbort?.abort();
+  searchAbort = new AbortController();
+  showMsg('Searching…');
   try {
-    const res = await geocode(q);
-    resultsEl.innerHTML = '';
-    if (!res.length){ resultsEl.innerHTML = '<li>No matches</li>'; resultsEl.hidden = false; return; }
-    res.forEach(r => {
-      const li = document.createElement('li');
-      li.textContent = [r.name, r.admin1, r.country_code].filter(Boolean).join(', ');
-      li.addEventListener('click', () => { resultsEl.hidden = true; $('#searchInput').value = ''; addPlace(r); });
-      resultsEl.appendChild(li);
-    });
-    resultsEl.hidden = false;
-  } catch { resultsEl.innerHTML = '<li>Search error</li>'; resultsEl.hidden = false; }
+    const res = await geocode(q, searchAbort.signal);
+    if (seq !== searchSeq) return;                 // a newer query superseded us
+    if (!res.length) return showMsg('No matches');
+    renderHits(res, q);
+  } catch (err) {
+    if (err.name === 'AbortError' || seq !== searchSeq) return;
+    showMsg('Search error — try again');
+  }
+}
+
+searchInput.addEventListener('input', () => {
+  const q = searchInput.value.trim();
+  searchClear.hidden = !searchInput.value;
+  clearTimeout(searchTimer);
+  if (isTestQuery(q)){                              // surface the hidden test location as a pickable row
+    hits = []; activeIdx = -1; openResults();
+    resultsEl.innerHTML = `<li class="result" id="sr-0" role="option"><span class="r-flag">🎲</span><span class="r-text"><span class="r-name">Add test weather</span><span class="r-sub">a randomly generated week</span></span></li>`;
+    resultsEl.querySelector('.result').addEventListener('pointerdown', e => { e.preventDefault(); resetSearch(); addTestPlace(); });
+    return;
+  }
+  if (q.length < 2){ closeResults(); return; }
+  searchTimer = setTimeout(() => runSearch(q), 220);
 });
+searchInput.addEventListener('keydown', e => {
+  const q = searchInput.value.trim();
+  if (e.key === 'ArrowDown'){ if (!resultsEl.hidden) { setActive(activeIdx + 1); e.preventDefault(); } }
+  else if (e.key === 'ArrowUp'){ if (!resultsEl.hidden) { setActive(activeIdx - 1); e.preventDefault(); } }
+  else if (e.key === 'Enter'){
+    e.preventDefault();
+    if (isTestQuery(q)){ resetSearch(); addTestPlace(); return; }
+    if (activeIdx >= 0) choose(activeIdx);
+    else if (hits.length) choose(0);                // Enter picks the top hit
+  } else if (e.key === 'Escape'){
+    if (!resultsEl.hidden) closeResults(); else resetSearch();
+  }
+});
+searchClear.addEventListener('click', () => { resetSearch(); searchInput.focus(); });
+searchInput.addEventListener('blur', () => setTimeout(closeResults, 120));   // let a row's pointerdown land first
+searchInput.addEventListener('focus', () => { if (hits.length || searchInput.value.trim().length >= 2) openResults(); });
 
 function locate(){
   if (!('geolocation' in navigator)){ setPlace('Location unavailable', 'Search in settings'); return; }

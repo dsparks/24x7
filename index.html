@@ -82,13 +82,14 @@
         <div class="field">
           <label>Locations</label>
           <div id="placeList" class="placelist"></div>
-          <form id="searchForm" autocomplete="off">
-            <div class="search-row">
-              <input id="searchInput" type="text" placeholder="Add a city…" aria-label="Add a location" />
-              <button type="submit" class="btn">Add</button>
-            </div>
-            <ul id="searchResults" class="results" hidden></ul>
-          </form>
+          <div id="searchBox" class="search" role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-owns="searchResults">
+            <input id="searchInput" class="search-input" type="search" inputmode="search"
+                   autocomplete="off" autocapitalize="words" spellcheck="false"
+                   placeholder="Search for a city…" aria-label="Search for a city"
+                   aria-controls="searchResults" aria-autocomplete="list" />
+            <button type="button" id="searchClear" class="search-clear" aria-label="Clear search" hidden>✕</button>
+            <ul id="searchResults" class="results" role="listbox" aria-label="City results" hidden></ul>
+          </div>
         </div>
 
         <div class="field">
