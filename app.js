@@ -282,8 +282,9 @@ function resetPopupPosition(kind, el, fallback){
   }
 }
 function makeDraggablePopup(kind, el, afterDrag, beforeDrag, fallback){
-  let drag = null, lastTap = 0;
+  let drag = null, lastTap = 0, holdTimer = 0;
   const TAP_SLOP = 8;
+  const HOLD_MS = 650;
   el.addEventListener('pointerdown', e => {
     if (e.button != null && e.button !== 0) return;
     beforeDrag?.();
@@ -294,7 +295,15 @@ function makeDraggablePopup(kind, el, afterDrag, beforeDrag, fallback){
       dx: e.clientX - (r.left + r.width / 2),
       dy: e.clientY - (r.top + r.height / 2),
       moved: false,
+      reset: false,
     };
+    clearTimeout(holdTimer);
+    holdTimer = setTimeout(() => {
+      if (!drag || drag.moved) return;
+      resetPopupPosition(kind, el, fallback);
+      drag.reset = true;
+      lastTap = 0;
+    }, HOLD_MS);
     el.classList.add('dragging');
     el.setPointerCapture?.(e.pointerId);
     e.preventDefault();
@@ -302,8 +311,16 @@ function makeDraggablePopup(kind, el, afterDrag, beforeDrag, fallback){
   });
   el.addEventListener('pointermove', e => {
     if (!drag) return;
+    if (drag.reset){
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     const dist = Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy);
-    if (dist > TAP_SLOP) drag.moved = true;
+    if (dist > TAP_SLOP){
+      drag.moved = true;
+      clearTimeout(holdTimer);
+    }
     if (!drag.moved){
       e.preventDefault();
       e.stopPropagation();
@@ -315,9 +332,12 @@ function makeDraggablePopup(kind, el, afterDrag, beforeDrag, fallback){
   });
   function finishDrag(e){
     if (!drag) return;
+    clearTimeout(holdTimer);
     const now = performance.now();
     const doubleTap = !drag.moved && now - lastTap < 320;
-    if (doubleTap) resetPopupPosition(kind, el, fallback);
+    if (drag.reset) {
+      // Already reset by long-press; just let the popup's normal timer resume.
+    } else if (doubleTap) resetPopupPosition(kind, el, fallback);
     else {
       const r = el.getBoundingClientRect();
       settings.popupPos[kind] = {
@@ -329,8 +349,9 @@ function makeDraggablePopup(kind, el, afterDrag, beforeDrag, fallback){
     el.classList.remove('dragging');
     el.releasePointerCapture?.(e.pointerId);
     const moved = drag.moved;
+    const reset = drag.reset;
     drag = null;
-    lastTap = doubleTap || moved ? 0 : now;
+    lastTap = reset || doubleTap || moved ? 0 : now;
     afterDrag?.(moved);
     e.preventDefault();
     e.stopPropagation();

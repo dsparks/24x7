@@ -2,7 +2,7 @@
  * Cache-first for the app's own files so it launches instantly offline.
  * Weather API calls are never cached here; the app keeps its last forecast in
  * localStorage and repaints from that on load. */
-const CACHE = 'grid-v20';
+const CACHE = 'grid-v21';
 const SHELL = [
   '.', 'index.html', 'styles.css', 'app.js', 'manifest.json', 'icon.svg',
 ];
