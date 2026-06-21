@@ -536,9 +536,11 @@ function drawCell(fc, dt){
       for (const p of fc.precip){
         p.y = (p.y + p.v * dt * 0.9) % 1;
         const py = top + p.y * skyH;
+        const sidePad = Math.abs(slant) * skyH;
         const px = left + p.x * w + slant * p.y * skyH;        // drift sideways as it falls — same slope as the streak
+        const pxSide = left - sidePad + p.x * (w + sidePad * 2) + slant * p.y * skyH;
         const len = Math.min(6, skyH * 0.18);
-        ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px - slant * len, py - len); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(pxSide, py); ctx.lineTo(pxSide - slant * len, py - len); ctx.stroke();
       }
     }
   }
