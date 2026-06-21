@@ -155,6 +155,7 @@ function toDays(j){
       isDay: h.is_day?.[i] ?? 1,
       tideFt: null,
       tideMark: null,
+      moon: null,
     };
   }
   const keys = [...byDate.keys()].sort().slice(0, 7);
@@ -280,11 +281,29 @@ function enrichSun(days, lat, lon, offset){
     c.elev = solarElevation(utc, lat, lon);
   }));
 }
+const SYNODIC_MONTH = 29.530588853;
+const NEW_MOON_EPOCH = Date.UTC(2000, 0, 6, 18, 14); // Jan 6 2000 18:14 UTC
+function moonPhaseAt(date){
+  const daysSince = (date.getTime() - NEW_MOON_EPOCH) / 86400000;
+  return ((daysSince / SYNODIC_MONTH) % 1 + 1) % 1;
+}
+function enrichMoon(days, offset){
+  days.forEach(d => {
+    d.cells.forEach(c => { if (c) c.moon = null; });
+    const noonUtc = new Date(Date.parse(`${ymd(d.date)}T12:00Z`) - offset * 1000);
+    const phase = moonPhaseAt(noonUtc);
+    const transitHour = (12 + phase * 24) % 24;
+    const h = Math.round(transitHour) % 24;
+    const c = d.cells[h];
+    if (c) c.moon = { phase };
+  });
+}
 
 /* ---------- Load orchestration ---------- */
-let days = [], orientation = 'p', loadSeq = 0, lastCoords = null;
+let days = [], orientation = 'p', loadSeq = 0, lastCoords = null, testMode = false;
 async function load(lat, lon){
   const seq = ++loadSeq;
+  testMode = false;
   lastCoords = { lat, lon };
   const start = new Date(); start.setHours(0, 0, 0, 0);
   try {
@@ -293,6 +312,8 @@ async function load(lat, lon){
     const parsed = toDays(fc);
     days = parsed.days;
     enrichSun(days, lat, lon, parsed.offset);
+    enrichMoon(days, parsed.offset);
+    resetDelight();
     render();                                   // paint sky immediately; tides fill in next
     // tides (async; may fail → synth)
     try {
@@ -323,14 +344,17 @@ async function load(lat, lon){
   }
 }
 function loadTest(){
+  testMode = true;
   const parsed = toDays(genTestForecast());
   days = parsed.days;
   enrichSun(days, 41.5, -71.3, parsed.offset);    // Narragansett-ish, just for sun timing
+  enrichMoon(days, parsed.offset);
   synthTides(days, -71.3);
   synthTideMarks(days);
   enrichTide(days);
   setTideSrc('Tide: simulated (test)');
   lastCoords = null;
+  resetDelight();
   render();
 }
 
@@ -340,7 +364,7 @@ function placeholderDays(){
     const d = new Date(start.getTime() + i * 86400000);
     const cells = Array.from({ length: 24 }, (_, h) => {
       const dayHr = h >= 6 && h <= 19;
-      return { iso: `${ymd(d)}T${pad(h)}:00`, cloud: 35, elev: dayHr ? 30 : -25, windMph: 4, windDir: 270, gust: 6, precipMm: 0, snowCm: 0, pop: 0, wcode: 0, isDay: dayHr ? 1 : 0, tF: null, tideFt: null };
+      return { iso: `${ymd(d)}T${pad(h)}:00`, cloud: 35, elev: dayHr ? 30 : -25, windMph: 4, windDir: 270, gust: 6, precipMm: 0, snowCm: 0, pop: 0, wcode: 0, isDay: dayHr ? 1 : 0, tF: null, tideFt: null, moon: null };
     });
     return { date: d, dow: WD[d.getDay()], dnum: d.getDate(), isToday: i === 0, cells };
   });
@@ -401,8 +425,14 @@ function fitHeaders(){
 }
 
 /* ---------- Cutaway canvas: water + chop + precip + stars ---------- */
-const fx = { cells: [], canvas: null, ctx: null, dpr: 1, w: 0, h: 0, raf: 0, last: 0, t: 0 };
+const fx = { cells: [], canvas: null, ctx: null, dpr: 1, w: 0, h: 0, raf: 0, last: 0, t: 0, delights: [], delightStarted: false, delightTimer: 0 };
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+function resetDelight(){
+  clearTimeout(fx.delightTimer);
+  fx.delights = [];
+  fx.delightStarted = false;
+  fx.delightTimer = 0;
+}
 const windToward = deg => { const r = (deg || 0) * Math.PI / 180; return { x: -Math.sin(r), y: Math.cos(r) }; };
 // Horizontal roll direction the wind BLOWS the surface (rain/spray/whitecaps too).
 // Open-Meteo wind_direction_10m is the bearing the wind comes FROM, so the wind
@@ -451,6 +481,7 @@ function layoutFx(){
     const fc = { di: +el.dataset.di, h: +el.dataset.h, cell: c, x: r.left - g.left, y: r.top - g.top, w: r.width, hgt: r.height };
     buildCellFx(fc); fx.cells.push(fc);
   });
+  scheduleDelight();
   startFx();
 }
 function drawCell(fc, dt){
@@ -476,6 +507,10 @@ function drawCell(fc, dt){
       ctx.fillStyle = `rgba(255,255,255,${a.toFixed(3)})`;
       ctx.beginPath(); ctx.arc(left + s.x * w, top + s.y * skyH, s.r, 0, 6.2832); ctx.fill();
     }
+  }
+  if (c.moon){
+    const skyH = Math.max(2, waterTop - top);
+    drawMoonPhase(ctx, left + w * 0.5, top + skyH / 3, clamp(Math.min(w, skyH) * 0.224, 3.4, 9.1), c.moon.phase);
   }
   // lightning flashes inside thunderstorm cells
   if (fc.thunder){
@@ -507,6 +542,7 @@ function drawCell(fc, dt){
       }
     }
   }
+  drawDelightBehindWater(fc);
   // black water surface (chop renderer chosen by CHOP_VERSION)
   drawWater(fc, waterTop);
   ctx.restore();
@@ -523,6 +559,26 @@ function hash01(...vals){
   return n - Math.floor(n);
 }
 function markRand(fc, salt){ return hash01(fc.di, fc.h, salt); }
+
+function drawMoonPhase(ctx, x, y, r, phase){
+  ctx.save();
+  ctx.beginPath(); ctx.arc(x, y, r, 0, 6.2832);
+  ctx.fillStyle = 'rgba(170,182,200,.22)'; ctx.fill();
+  ctx.save();
+  ctx.beginPath(); ctx.arc(x, y, r, 0, 6.2832); ctx.clip();
+  ctx.fillStyle = 'rgba(255,246,210,.94)';
+  const k = Math.cos(phase * 2 * Math.PI);
+  const waxing = phase < 0.5;
+  for (let yy = -r; yy <= r; yy += 0.8){
+    const xlim = Math.sqrt(Math.max(0, r * r - yy * yy));
+    const xt = k * xlim;
+    const x0 = waxing ? xt : -xlim;
+    const x1 = waxing ? xlim : -xt;
+    if (x1 > x0) ctx.fillRect(x + x0, y + yy - 0.45, x1 - x0, 0.9);
+  }
+  ctx.restore();
+  ctx.restore();
+}
 
 function drawWater(fc, waterTop){
   if (CHOP_VERSION === 1) return drawWaterV1(fc, waterTop);
@@ -720,22 +776,10 @@ function drawWaterV3(fc, waterTop){
   }
 }
 const TIDE_MARK_STYLES = [
-  'gold / cyan',
-  'ivory / magenta',
-  'lime / lavender',
-  'orange / aqua',
-  'white / cobalt',
-  'coral / mint',
-  'lemon / blue',
+  'coral / aquamarine',
 ];
 const TIDE_MARK_PALETTES = [
-  { high: '#ffd36a', low: '#74d8ff' },
-  { high: '#fff7a8', low: '#ff4fd8' },
-  { high: '#b7ff3c', low: '#b990ff' },
-  { high: '#ff9f1c', low: '#00e5ff' },
-  { high: '#ffffff', low: '#3d7cff' },
-  { high: '#ff5a3d', low: '#7cffc4' },
-  { high: '#f6ff00', low: '#00a2ff' },
+  { high: '#ff6f61', low: '#7fffd4' },
 ];
 function colorParts(hex){
   const n = parseInt(hex.slice(1), 16);
@@ -799,6 +843,306 @@ function drawSelectedCell(){
   drawSelectedDayTideLocators(ctx, selectedCell.di);
   ctx.restore();
 }
+function rowCells(di){ return fx.cells.filter(c => c.di === di).sort((a, b) => a.h - b.h); }
+function rowBounds(cells){
+  const first = cells[0], last = cells[cells.length - 1];
+  return first && last ? { x: first.x, y: first.y, w: last.x + last.w - first.x, h: first.hgt } : null;
+}
+function waterY(fc, frac = 0.5){ return fc.y + (1 - (fc.cell.waterFrac ?? 0.45)) * fc.hgt + fc.hgt * frac; }
+function cellAtRowX(row, rb, x){
+  if (!row?.length || !rb) return null;
+  const i = clamp(Math.floor((x - rb.x) / (rb.w / row.length)), 0, row.length - 1);
+  return row[i] || row[0];
+}
+function waterTopOf(fc){ return fc.y + (1 - (fc.cell.waterFrac ?? 0.45)) * fc.hgt; }
+function fishBounds(fc){
+  if (!fc) return null;
+  const top = waterTopOf(fc), bottom = fc.y + fc.hgt;
+  return { min: top + Math.max(4, fc.hgt * 0.12), max: bottom - Math.max(4, fc.hgt * 0.08), top, bottom };
+}
+function fishYFor(fc, lane = 0.58){
+  const b = fishBounds(fc);
+  if (!b) return 0;
+  return clamp(b.top + (b.bottom - b.top) * lane, b.min, b.max);
+}
+function gullBounds(fc){
+  if (!fc) return null;
+  const waterTop = waterTopOf(fc);
+  const minY = fc.y + Math.max(4, fc.hgt * 0.08);
+  const maxY = waterTop - Math.max(5, fc.hgt * 0.08);
+  return { min: minY, max: Math.max(minY, maxY) };
+}
+function gullYFor(fc, lane = 0.38){
+  const b = gullBounds(fc);
+  if (!b) return 0;
+  return b.max > b.min ? lerp(b.min, b.max, lane) : b.min;
+}
+function smoothRowY(row, rb, x, lane, yFor, boundsFor){
+  if (!row?.length || !rb) return 0;
+  const raw = clamp((x - rb.x) / (rb.w / row.length), 0, row.length - 1);
+  const i0 = Math.floor(raw), i1 = Math.min(row.length - 1, i0 + 1);
+  const t = raw - i0, ss = t * t * (3 - 2 * t);
+  const y = lerp(yFor(row[i0], lane), yFor(row[i1], lane), ss);
+  const b = boundsFor(cellAtRowX(row, rb, x));
+  return b ? clamp(y, b.min, b.max) : y;
+}
+function smoothFishY(row, rb, x, lane){ return smoothRowY(row, rb, x, lane, fishYFor, fishBounds); }
+function smoothGullY(row, rb, x, lane){ return smoothRowY(row, rb, x, lane, gullYFor, gullBounds); }
+function planFishJump(row){
+  if (!row?.length) return null;
+  const candidates = [];
+  for (let low = 1; low < row.length - 1; low++){
+    const lowCell = row[low];
+    const markedLow = lowCell.cell.tideMark?.type === 'L';
+    const directionTurnsUp = row[low - 1].cell.rising === false && row[low + 1].cell.rising === true;
+    if (!markedLow && !directionTurnsUp) continue;
+    for (let left = 1; left <= 3; left++){
+      for (let right = 1; right <= 3; right++){
+        const si = low - left, ei = low + right;
+        if (si < 0 || ei >= row.length) continue;
+        const span = ei - si;
+        if (span < 3 || span > 6) continue;
+        const a = row[si], b = row[ei];
+        const startsFalling = a.cell.rising === false;
+        const endsRising = b.cell.rising === true;
+        const lowDrop = Math.max(0, Math.min(a.cell.waterFrac ?? 0.45, b.cell.waterFrac ?? 0.45) - (lowCell.cell.waterFrac ?? 0.45));
+        candidates.push({ a, b, low: lowCell, span, score: (markedLow ? 4 : 2) + (startsFalling ? 2 : 0) + (endsRising ? 2 : 0) + lowDrop });
+      }
+    }
+  }
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => b.score - a.score);
+  const pick = candidates[Math.floor(Math.random() * Math.min(6, candidates.length))];
+  const dir = pick.b.x >= pick.a.x ? 1 : -1;
+  const x0 = pick.a.x + pick.a.w * (0.18 + Math.random() * 0.18);
+  const x1 = pick.b.x + pick.b.w * (0.64 + Math.random() * 0.18);
+  const y0 = waterTopOf(pick.a), y1 = waterTopOf(pick.b);
+  const baseMid = (y0 + y1) / 2;
+  const safeTop = pick.a.y + Math.max(8, pick.a.hgt * 0.14);
+  const desiredArc = pick.a.hgt * (0.34 + Math.min(0.24, Math.abs(x1 - x0) / (pick.a.w * 28)));
+  const arcH = clamp(Math.min(desiredArc, baseMid - safeTop), pick.a.hgt * 0.16, pick.a.hgt * 0.52);
+  return {
+    start: pick.a,
+    end: pick.b,
+    low: pick.low,
+    dir,
+    x0,
+    x1,
+    arcH,
+  };
+}
+function chooseDelightEvent(row, forcedKind = ''){
+  if (!fx.cells.length) return null;
+  const rows = [...new Set(fx.cells.map(c => c.di))].map(di => rowCells(di)).filter(r => r.length);
+  row = row?.length ? row : rows[Math.floor(Math.random() * rows.length)];
+  const night = row.filter(c => (c.cell.elev ?? 0) < -6 || c.cell._starA > 0.18);
+  const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+  const fishColor = () => pick(['#f7fbff', '#7fffd4', '#ff6f61']);
+  const buoyColor = () => pick(['#f7fbff', '#7fffd4', '#ff6f61']);
+  const crossingSlowdown = orientation === 'l' ? 1.5 : 1;
+  const variants = ['shootingStar', 'fishSwim', 'fishJump', 'gullFly', 'bubbleSeep', 'buoy'];
+  const kind = variants.includes(forcedKind) ? forcedKind : pick(variants);
+  const rb = rowBounds(row);
+  const fc = pick(kind === 'shootingStar' && night.length ? night : row);
+  const t0 = fx.t + 0.55 + (row[0]?.di || 0) * 0.16;
+  if (kind === 'shootingStar'){
+    const cell = pick(night.length ? night : fx.cells);
+    return { kind, t0, dur: 1.05, cell, sx: 0.12 + Math.random() * 0.42, sy: 0.10 + Math.random() * 0.30, len: 0.42 + Math.random() * 0.20 };
+  }
+  if (kind === 'fishSwim' && rb) return { kind, t0, dur: (15.5 + Math.random() * 8) * crossingSlowdown, row, rb, dir: Math.random() < 0.5 ? -1 : 1, lane: 0.42 + Math.random() * 0.34, color: fishColor() };
+  if (kind === 'fishJump'){
+    const jump = planFishJump(row);
+    if (jump) return { kind, t0, dur: 2.6 + Math.random() * 0.7, color: fishColor(), ...jump };
+    return { kind: 'bubbleSeep', t0, dur: 5.8, riseDur: 3.6, gap: 0.38, cell: fc, xFrac: 0.24 + Math.random() * 0.52, count: 8, drift: Math.random() < 0.5 ? -1 : 1 };
+  }
+  if (kind === 'gullFly' && rb) return { kind, t0, dur: (13 + Math.random() * 6.5) * crossingSlowdown, row, rb, dir: Math.random() < 0.5 ? -1 : 1, lane: 0.22 + Math.random() * 0.45 };
+  if (kind === 'bubbleSeep'){
+    const count = 8 + Math.floor(Math.random() * 5);
+    const riseDur = 3.4 + Math.random() * 0.8, gap = 0.34 + Math.random() * 0.08;
+    return { kind, t0, dur: riseDur + gap * (count - 1) + 0.5, riseDur, gap, cell: fc, xFrac: 0.24 + Math.random() * 0.52, count, drift: Math.random() < 0.5 ? -1 : 1 };
+  }
+  if (kind === 'buoy') return { kind, t0, dur: 75, cell: fc, xFrac: 0.34 + Math.random() * 0.32, color: buoyColor(), phase: Math.random() * 6.2832 };
+  return null;
+}
+function scheduleDelight(){
+  if (fx.delightStarted || fx.delightTimer || reduceMotion.matches || !fx.cells.length) return;
+  fx.delightStarted = true;
+  if (!testMode && Math.random() >= 1 / 7) return;
+  fx.delightTimer = setTimeout(() => {
+    fx.delightTimer = 0;
+    const ev = chooseDelightEvent();
+    fx.delights = ev ? [ev] : [];
+    startFx();
+  }, 950);
+}
+function hexToRgb(hex){
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function drawTinyFish(ctx, x, y, s, dir, alpha = 1, color = '#f7fbff'){
+  const [r, g, b] = hexToRgb(color);
+  ctx.save(); ctx.translate(x, y); ctx.scale(dir, 1);
+  ctx.fillStyle = `rgba(${r},${g},${b},${alpha.toFixed(3)})`;
+  ctx.beginPath(); ctx.ellipse(0, 0, s * 0.9, s * 0.34, 0, 0, 6.2832);
+  ctx.moveTo(-s * 0.85, 0); ctx.lineTo(-s * 1.35, -s * 0.38); ctx.lineTo(-s * 1.22, 0); ctx.lineTo(-s * 1.35, s * 0.38); ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = `rgba(5,8,14,${(0.55 * alpha).toFixed(3)})`;
+  ctx.beginPath(); ctx.arc(s * 0.42, -s * 0.06, Math.max(0.45, s * 0.06), 0, 6.2832); ctx.fill();
+  ctx.restore();
+}
+function drawTinyGull(ctx, x, y, s, dir, phase, alpha = 1){
+  const flap = Math.sin(phase), lift = s * (0.30 + flap * 0.18);
+  ctx.save(); ctx.translate(x, y); ctx.scale(dir, 1);
+  ctx.strokeStyle = `rgba(255,255,255,${alpha.toFixed(3)})`;
+  ctx.lineWidth = Math.max(1, s * 0.12); ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(-s * 0.95, 0); ctx.quadraticCurveTo(-s * 0.42, -lift, 0, s * 0.04); ctx.quadraticCurveTo(s * 0.42, -lift, s * 0.95, 0);
+  ctx.stroke();
+  ctx.restore();
+}
+function drawTinyBuoy(ctx, x, surface, s, color, phase, tilt){
+  ctx.save();
+  ctx.translate(x, surface);
+  ctx.rotate(tilt);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  const shadow = 'rgba(8,12,18,.35)';
+  ctx.strokeStyle = shadow;
+  ctx.lineWidth = Math.max(1.2, s * 0.14);
+  ctx.beginPath();
+  ctx.moveTo(-s * 0.78, -s * 0.24); ctx.lineTo(-s * 0.34, -s * 2.15);
+  ctx.moveTo(s * 0.78, -s * 0.24); ctx.lineTo(s * 0.34, -s * 2.15);
+  ctx.moveTo(-s * 0.54, -s * 1.1); ctx.lineTo(s * 0.54, -s * 1.1);
+  ctx.stroke();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = Math.max(1, s * 0.09);
+  ctx.beginPath();
+  ctx.moveTo(-s * 0.78, -s * 0.24); ctx.lineTo(-s * 0.34, -s * 2.15);
+  ctx.moveTo(s * 0.78, -s * 0.24); ctx.lineTo(s * 0.34, -s * 2.15);
+  ctx.moveTo(-s * 0.5, -s * 1.1); ctx.lineTo(s * 0.5, -s * 1.1);
+  ctx.moveTo(-s * 0.62, -s * 0.45); ctx.lineTo(s * 0.28, -s * 1.95);
+  ctx.moveTo(s * 0.62, -s * 0.45); ctx.lineTo(-s * 0.28, -s * 1.95);
+  ctx.stroke();
+  ctx.fillStyle = color;
+  ctx.strokeStyle = shadow;
+  ctx.lineWidth = Math.max(0.7, s * 0.055);
+  ctx.beginPath();
+  ctx.ellipse(0, s * 0.18, s * 0.9, s * 0.36, 0, 0, 6.2832);
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = 'rgba(0,0,0,.18)';
+  ctx.fillRect(-s * 0.72, s * 0.18, s * 1.44, s * 0.2);
+  ctx.fillStyle = color;
+  ctx.fillRect(-s * 0.62, -s * 0.06, s * 1.24, s * 0.36);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(-s * 0.34, -s * 2.15);
+  ctx.lineTo(s * 0.34, -s * 2.15);
+  ctx.lineTo(s * 0.44, -s * 1.62);
+  ctx.lineTo(-s * 0.44, -s * 1.62);
+  ctx.closePath();
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(0, -s * 2.72);
+  ctx.lineTo(s * 0.42, -s * 2.18);
+  ctx.lineTo(-s * 0.42, -s * 2.18);
+  ctx.closePath();
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.arc(0, -s * 2.02, Math.max(0.8, s * 0.13), 0, 6.2832); ctx.fill();
+  ctx.restore();
+}
+function drawFishJumpEvent(ev){
+  const p = (fx.t - ev.t0) / ev.dur;
+  if (p < 0 || p > 1) return;
+  const ctx = fx.ctx;
+  if (ev.start && ev.end){
+    const y0 = waterTopOf(ev.start), y1 = waterTopOf(ev.end);
+    const arc = Math.sin(Math.PI * p), x = lerp(ev.x0, ev.x1, p);
+    const y = Math.max(ev.start.y + Math.max(7, ev.start.hgt * 0.12), lerp(y0, y1, p) - ev.arcH * arc);
+    drawTinyFish(ctx, x, y, 4, ev.dir, 1, ev.color);
+  } else {
+    const c = ev.cell, waterTop = c.y + (1 - (c.cell.waterFrac ?? 0.45)) * c.hgt;
+    const arc = Math.sin(Math.PI * p), x = c.x + c.w * ev.xFrac + ev.dir * c.w * 0.34 * (p - 0.5), y = waterTop - c.hgt * 0.36 * arc;
+    drawTinyFish(ctx, x, y, 3.6, ev.dir, 1, ev.color);
+  }
+}
+function drawBuoyEvent(ev, fc){
+  const p = (fx.t - ev.t0) / ev.dur;
+  if (p < 0 || p > 1) return;
+  if (ev.cell !== fc) return;
+  const ctx = fx.ctx;
+  const x = fc.x + fc.w * ev.xFrac;
+  const localX = clamp(x - fc.x, 0, fc.w);
+  const surface = waterSurfaceAt(fc, waterTopOf(fc), localX);
+  const leftY = waterSurfaceAt(fc, waterTopOf(fc), clamp(localX - 4, 0, fc.w));
+  const rightY = waterSurfaceAt(fc, waterTopOf(fc), clamp(localX + 4, 0, fc.w));
+  const waveTilt = clamp((rightY - leftY) * 0.08, -0.18, 0.18);
+  const phase = fx.t * 1.7 + ev.phase;
+  drawTinyBuoy(ctx, x, surface + Math.sin(phase) * 0.45, clamp(Math.min(fc.w, fc.hgt) * 0.18, 3.7, 7.4), ev.color, phase, waveTilt + Math.sin(phase * 0.7) * 0.055);
+}
+function drawDelightBehindWater(fc){
+  if (!fx.delights?.length) return;
+  for (const ev of fx.delights){
+    const rowDi = ev.start?.di ?? ev.cell?.di ?? ev.row?.[0]?.di;
+    if (rowDi !== fc.di) continue;
+    if (ev.kind === 'fishJump') drawFishJumpEvent(ev);
+    else if (ev.kind === 'buoy') drawBuoyEvent(ev, fc);
+  }
+}
+function drawDelightEvent(ev){
+  if (!ev) return;
+  if (ev.kind === 'fishJump' || ev.kind === 'buoy') return;
+  const p = (fx.t - ev.t0) / ev.dur;
+  if (p < 0) return;
+  if (p > 1) return;
+  const ctx = fx.ctx;
+  ctx.save();
+  if (ev.kind === 'shootingStar'){
+    const c = ev.cell, skyH = Math.max(2, (1 - (c.cell.waterFrac ?? 0.45)) * c.hgt);
+    ctx.beginPath(); ctx.rect(c.x, c.y, c.w, skyH); ctx.clip();
+    const x = c.x + c.w * (ev.sx + ev.len * p), y = c.y + skyH * (ev.sy + ev.len * 0.45 * p);
+    const tx = c.w * 0.34, ty = skyH * 0.16, a = Math.sin(Math.PI * p);
+    const g = ctx.createLinearGradient(x - tx, y - ty, x, y);
+    g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(0.75, `rgba(190,220,255,${(0.35 * a).toFixed(3)})`); g.addColorStop(1, `rgba(255,255,255,${(0.95 * a).toFixed(3)})`);
+    ctx.strokeStyle = g; ctx.lineWidth = 1.4; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(x - tx, y - ty); ctx.lineTo(x, y); ctx.stroke();
+    ctx.fillStyle = `rgba(255,255,255,${a.toFixed(3)})`; ctx.beginPath(); ctx.arc(x, y, 1.2, 0, 6.2832); ctx.fill();
+  } else if (ev.kind === 'fishSwim'){
+    const x = ev.dir > 0 ? ev.rb.x - 12 + (ev.rb.w + 24) * p : ev.rb.x + ev.rb.w + 12 - (ev.rb.w + 24) * p;
+    drawTinyFish(ctx, x, smoothFishY(ev.row, ev.rb, x, ev.lane) + Math.sin(fx.t * 2.2) * 0.8, 3.8, ev.dir, Math.sin(Math.PI * p), ev.color);
+  } else if (ev.kind === 'gullFly'){
+    const x = ev.dir > 0 ? ev.rb.x - 14 + (ev.rb.w + 28) * p : ev.rb.x + ev.rb.w + 14 - (ev.rb.w + 28) * p;
+    drawTinyGull(ctx, x, smoothGullY(ev.row, ev.rb, x, ev.lane) + Math.sin(p * Math.PI * 2) * 1.2, 7, ev.dir, fx.t * 5.2, Math.sin(Math.PI * p));
+  } else if (ev.kind === 'bubbleSeep'){
+    const c = ev.cell, waterTop = waterTopOf(c), bottom = c.y + c.hgt - 2;
+    const elapsed = fx.t - ev.t0;
+    for (let i = 0; i < ev.count; i++){
+      const q = (elapsed - i * ev.gap) / ev.riseDur;
+      if (q < 0 || q > 1) continue;
+      const ease = 1 - Math.pow(1 - q, 1.8);
+      const wobble = Math.sin(q * 8 + i * 1.7) * c.w * 0.035;
+      const x = c.x + c.w * ev.xFrac + wobble + ev.drift * q * c.w * 0.035;
+      const y = lerp(bottom, waterTop + 2, ease);
+      const surfacePop = q > 0.9 ? (1 - q) / 0.1 : 1;
+      const fade = Math.min(1, q * 5, surfacePop);
+      ctx.strokeStyle = `rgba(180,235,255,${(0.42 * fade).toFixed(3)})`;
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(x, y, 0.9 + i % 3 * 0.22 + q * 0.45, 0, 6.2832); ctx.stroke();
+    }
+  } else {
+    const c = ev.cell, waterTop = c.y + (1 - (c.cell.waterFrac ?? 0.45)) * c.hgt;
+    const x = c.x + c.w * ev.xFrac, a = Math.sin(Math.PI * p);
+    ctx.strokeStyle = `rgba(255,244,190,${(0.45 * a).toFixed(3)})`; ctx.lineWidth = 1; ctx.lineCap = 'round';
+    for (let i = 0; i < 3; i++){ ctx.beginPath(); ctx.moveTo(x - 5 + i * 3, waterTop + 3 + i * 3); ctx.lineTo(x + 5 + i * 3, waterTop + 3 + i * 3); ctx.stroke(); }
+  }
+  ctx.restore();
+}
+function drawDelight(){
+  if (!fx.delights?.length) return;
+  fx.delights = fx.delights.filter(ev => (fx.t - ev.t0) / ev.dur <= 1);
+  for (const ev of fx.delights) drawDelightEvent(ev);
+}
 function frame(now){
   const dt = Math.min(0.05, (now - fx.last) / 1000 || 0);
   fx.last = now; fx.t = now / 1000;
@@ -806,12 +1150,13 @@ function frame(now){
   for (const fc of fx.cells) drawCell(fc, dt);
   drawNowLine();
   drawSelectedCell();
+  drawDelight();
   fx.raf = requestAnimationFrame(frame);
 }
 function startFx(){
   cancelAnimationFrame(fx.raf); fx.raf = 0;
   if (!fx.cells.length){ fx.ctx?.clearRect(0, 0, fx.w, fx.h); return; }
-  if (reduceMotion.matches){ fx.ctx.clearRect(0, 0, fx.w, fx.h); fx.t = 0; for (const fc of fx.cells) drawCell(fc, 0); drawNowLine(); drawSelectedCell(); return; }
+  if (reduceMotion.matches){ fx.ctx.clearRect(0, 0, fx.w, fx.h); fx.t = 0; for (const fc of fx.cells) drawCell(fc, 0); drawNowLine(); drawSelectedCell(); drawDelight(); return; }
   fx.last = performance.now(); fx.raf = requestAnimationFrame(frame);
 }
 document.addEventListener('visibilitychange', () => { if (document.hidden){ cancelAnimationFrame(fx.raf); fx.raf = 0; } else startFx(); });
@@ -826,6 +1171,33 @@ function clampPopupPoint(el, x, y){
 function setPopupPoint(el, x, y){ const p = clampPopupPoint(el, x, y); el.style.left = p.x + 'px'; el.style.top = p.y + 'px'; el.style.right = 'auto'; el.style.bottom = 'auto'; el.style.transform = 'translate(-50%,-50%)'; }
 function applyPopupPosition(kind, el){ const s = settings.popupPos?.[kind]; if (s) setPopupPoint(el, s.x * innerWidth, s.y * innerHeight); }
 function resetPopupPosition(kind, el){ delete settings.popupPos[kind]; saveSettings(); el.style.left = el.style.top = el.style.right = el.style.bottom = el.style.transform = ''; }
+function rectsOverlap(a, b, pad = 0){
+  return a.left < b.right + pad && a.right > b.left - pad && a.top < b.bottom + pad && a.bottom > b.top - pad;
+}
+function keepPopupOffRect(el, avoidRect){
+  if (!avoidRect) return;
+  let pr = el.getBoundingClientRect();
+  if (!rectsOverlap(pr, avoidRect, 8)) return;
+  const current = { x: pr.left + pr.width / 2, y: pr.top + pr.height / 2 };
+  const gap = 12, cx = avoidRect.left + avoidRect.width / 2, cy = avoidRect.top + avoidRect.height / 2;
+  const raw = [
+    { x: cx, y: avoidRect.top - pr.height / 2 - gap },
+    { x: cx, y: avoidRect.bottom + pr.height / 2 + gap },
+    { x: avoidRect.left - pr.width / 2 - gap, y: cy },
+    { x: avoidRect.right + pr.width / 2 + gap, y: cy },
+    { x: avoidRect.left - pr.width / 2 - gap, y: avoidRect.top - pr.height / 2 - gap },
+    { x: avoidRect.right + pr.width / 2 + gap, y: avoidRect.top - pr.height / 2 - gap },
+    { x: avoidRect.left - pr.width / 2 - gap, y: avoidRect.bottom + pr.height / 2 + gap },
+    { x: avoidRect.right + pr.width / 2 + gap, y: avoidRect.bottom + pr.height / 2 + gap },
+  ];
+  const choices = raw.map(p => {
+    const c = clampPopupPoint(el, p.x, p.y);
+    const r = { left: c.x - pr.width / 2, right: c.x + pr.width / 2, top: c.y - pr.height / 2, bottom: c.y + pr.height / 2 };
+    return { ...c, overlaps: rectsOverlap(r, avoidRect, 8), dist: Math.hypot(c.x - current.x, c.y - current.y) };
+  });
+  const best = choices.filter(c => !c.overlaps).sort((a, b) => a.dist - b.dist)[0] || choices.sort((a, b) => b.dist - a.dist)[0];
+  if (best) setPopupPoint(el, best.x, best.y);
+}
 function makeDraggablePopup(kind, el, afterDrag, beforeDrag, onTap){
   let drag = null, lastTap = 0, holdTimer = 0; const SLOP = 8, HOLD = 650;
   el.addEventListener('pointerdown', e => {
@@ -872,7 +1244,7 @@ gridEl.addEventListener('click', e => {
   if (performance.now() < suppressTipGridClickUntil) return;
   if (swiped){ swiped = false; return; }                       // a swipe is not a tap
   const c = e.target.closest('.cell'); if (!c || c.classList.contains('empty')) return;
-  showTip(+c.dataset.di, +c.dataset.h);
+  showTip(+c.dataset.di, +c.dataset.h, c);
 });
 document.addEventListener('click', e => { if (!e.target.closest('.cell') && !e.target.closest('.tip')) hideTip(); }, true);
 function cycleLocation(dir){
@@ -890,7 +1262,7 @@ function dismissTipFromPopup(){
   suppressTipGridClickUntil = performance.now() + 450;
   setTimeout(hideTip, 0);
 }
-function showTip(di, h){
+function showTip(di, h, el){
   const c = days[di]?.cells[h]; if (!c) return;
   selectedCell = { di, h };
   const d = days[di];
@@ -899,7 +1271,7 @@ function showTip(di, h){
     const arrow = c.rising == null ? '' : (c.rising ? `<span class="tide-rise">▲ rising</span>` : `<span class="tide-fall">▼ falling</span>`);
     bits.push(`· tide ${c.tideFt.toFixed(1)} ft ${arrow}`);
   }
-  if (c.tideMark) bits.push(`· ${c.tideMark.type === 'H' ? 'high' : 'low'} tide ${fmtClockMinute(h, c.tideMark.minute || 0)} · colors: ${TIDE_MARK_STYLES[di % TIDE_MARK_STYLES.length]}`);
+  if (c.tideMark) bits.push(`· ${c.tideMark.type === 'H' ? 'high' : 'low'} tide ${fmtClockMinute(h, c.tideMark.minute || 0)}`);
   bits.push(`· wind ${Math.round(c.windMph)}${c.windDir != null ? ' ' + compass8(c.windDir) : ''} mph`);
   if ((c.pop || 0) > 10 && isThunder(c)) bits.push(`· ${c.pop | 0}% thunderstorm`);
   else if ((c.pop || 0) > 10 && ((c.precipMm || 0) > 0 || (c.snowCm || 0) > 0)) bits.push(`· ${c.pop | 0}% ${c.snowCm > 0 ? 'snow' : 'rain'}`);
@@ -912,6 +1284,7 @@ function showTip(di, h){
   tipEl.style.setProperty('--tip-shift', Math.round(cellH) + 'px');
   tipEl.hidden = false;
   applyPopupPosition('tip', tipEl);                            // honor a saved dragged position
+  keepPopupOffRect(tipEl, el?.getBoundingClientRect());
   if (reduceMotion.matches) startFx();
   clearTimeout(tipTimer); tipTimer = setTimeout(hideTip, 15000);
 }

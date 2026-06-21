@@ -270,6 +270,33 @@ function applyPopupPosition(kind, el, fallback){
   if (!saved) return;
   setPopupPoint(el, saved.x * innerWidth, saved.y * innerHeight);
 }
+function rectsOverlap(a, b, pad = 0){
+  return a.left < b.right + pad && a.right > b.left - pad && a.top < b.bottom + pad && a.bottom > b.top - pad;
+}
+function keepPopupOffRect(el, avoidRect){
+  if (!avoidRect) return;
+  let pr = el.getBoundingClientRect();
+  if (!rectsOverlap(pr, avoidRect, 8)) return;
+  const current = { x: pr.left + pr.width / 2, y: pr.top + pr.height / 2 };
+  const gap = 12, cx = avoidRect.left + avoidRect.width / 2, cy = avoidRect.top + avoidRect.height / 2;
+  const raw = [
+    { x: cx, y: avoidRect.top - pr.height / 2 - gap },
+    { x: cx, y: avoidRect.bottom + pr.height / 2 + gap },
+    { x: avoidRect.left - pr.width / 2 - gap, y: cy },
+    { x: avoidRect.right + pr.width / 2 + gap, y: cy },
+    { x: avoidRect.left - pr.width / 2 - gap, y: avoidRect.top - pr.height / 2 - gap },
+    { x: avoidRect.right + pr.width / 2 + gap, y: avoidRect.top - pr.height / 2 - gap },
+    { x: avoidRect.left - pr.width / 2 - gap, y: avoidRect.bottom + pr.height / 2 + gap },
+    { x: avoidRect.right + pr.width / 2 + gap, y: avoidRect.bottom + pr.height / 2 + gap },
+  ];
+  const choices = raw.map(p => {
+    const c = clampPopupPoint(el, p.x, p.y);
+    const r = { left: c.x - pr.width / 2, right: c.x + pr.width / 2, top: c.y - pr.height / 2, bottom: c.y + pr.height / 2 };
+    return { ...c, overlaps: rectsOverlap(r, avoidRect, 8), dist: Math.hypot(c.x - current.x, c.y - current.y) };
+  });
+  const best = choices.filter(c => !c.overlaps).sort((a, b) => a.dist - b.dist)[0] || choices.sort((a, b) => b.dist - a.dist)[0];
+  if (best) setPopupPoint(el, best.x, best.y);
+}
 function resetPopupPosition(kind, el, fallback){
   delete settings.popupPos[kind];
   saveSettings();
@@ -1166,6 +1193,7 @@ function showTip(di, h, el){
   tipEl.style.setProperty('--tip-shift', Math.round(cellH) + 'px');   // nudge up one rectangle
   tipEl.hidden = false;
   applyPopupPosition('tip', tipEl);
+  keepPopupOffRect(tipEl, el?.getBoundingClientRect());
   clearTimeout(tipTimer);
   tipTimer = setTimeout(hideTip, 15000);
 }
