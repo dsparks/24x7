@@ -1485,26 +1485,4 @@ function boot(){
   setPlace('Locating…', ''); locate();
 }
 
-function isFathersDay(date = new Date()){
-  return date.getMonth() === 5 && date.getDay() === 0 && date.getDate() >= 15 && date.getDate() <= 21;
-}
-function launchFathersDayEgg(){
-  if (!isFathersDay()) return;
-  const egg = document.createElement('div');
-  egg.className = 'father-egg';
-  egg.setAttribute('aria-hidden', 'true');
-  egg.innerHTML = `
-    <div class="father-egg-bubbles">
-      <i></i><i></i><i></i><i></i><i></i><i></i><i></i>
-    </div>
-    <div class="father-egg-words">
-      <span>HAPPY</span>
-      <span>FATHER'S</span>
-      <span>DAY</span>
-    </div>
-  `;
-  document.body.appendChild(egg);
-  setTimeout(() => egg.remove(), 14500);
-}
 boot();
-launchFathersDayEgg();
