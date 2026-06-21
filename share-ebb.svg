@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
+  <title id="title">Ebb fishing conditions preview</title>
+  <desc id="desc">A seven-day ocean cutaway grid showing tides, chop, sky, moon, and rain.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#05070c"/>
+      <stop offset=".52" stop-color="#0c1624"/>
+      <stop offset="1" stop-color="#020308"/>
+    </linearGradient>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#101830"/>
+      <stop offset=".22" stop-color="#5fa6f2"/>
+      <stop offset=".5" stop-color="#9fb5bf"/>
+      <stop offset=".76" stop-color="#6caaf4"/>
+      <stop offset="1" stop-color="#17182c"/>
+    </linearGradient>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="24" flood-color="#000" flood-opacity=".46"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <circle cx="1040" cy="115" r="210" fill="#15364a" opacity=".42"/>
+  <circle cx="150" cy="520" r="250" fill="#123b35" opacity=".38"/>
+  <g filter="url(#soft)">
+    <rect x="112" y="104" width="976" height="396" rx="26" fill="#05070c"/>
+    <g transform="translate(134 130)">
+      <rect width="932" height="344" rx="12" fill="#060910"/>
+      <rect width="932" height="344" fill="url(#sky)" opacity=".9"/>
+      <g stroke="#fff" stroke-opacity=".14" stroke-width="1">
+        <path d="M0 49H932M0 98H932M0 147H932M0 196H932M0 245H932M0 294H932"/>
+        <path d="M39 0V344M78 0V344M117 0V344M156 0V344M195 0V344M234 0V344M273 0V344M312 0V344M351 0V344M390 0V344M429 0V344M468 0V344M507 0V344M546 0V344M585 0V344M624 0V344M663 0V344M702 0V344M741 0V344M780 0V344M819 0V344M858 0V344M897 0V344"/>
+      </g>
+      <path d="M0 58C35 46 55 72 90 54S147 41 188 58S247 82 300 70S365 49 418 64S492 92 545 78S615 55 672 68S746 91 800 72S872 40 932 56V344H0Z" fill="#000"/>
+      <path d="M0 112C34 104 58 128 92 116S153 93 201 108S261 146 309 134S373 101 421 116S493 154 548 136S612 105 665 119S736 150 791 132S868 97 932 111V344H0Z" fill="#000" opacity=".96"/>
+      <path d="M0 190C38 182 60 205 96 194S156 171 205 184S267 226 316 211S379 176 430 191S501 229 557 214S621 180 677 194S741 231 795 216S862 180 932 196V344H0Z" fill="#000" opacity=".92"/>
+      <path d="M0 270C42 261 62 284 101 274S160 251 211 265S271 302 322 290S386 254 436 268S508 303 565 291S629 255 684 269S751 306 806 293S867 256 932 271V344H0Z" fill="#000" opacity=".9"/>
+      <g fill="#fff" opacity=".88">
+        <circle cx="64" cy="38" r="2"/><circle cx="96" cy="28" r="1.5"/><circle cx="136" cy="43" r="1.4"/><circle cx="845" cy="34" r="2"/><circle cx="892" cy="49" r="1.5"/>
+        <circle cx="610" cy="52" r="9" fill="#fff4c8"/>
+      </g>
+      <g stroke="#b9d5ef" stroke-width="2" stroke-linecap="round" opacity=".6">
+        <path d="M704 90l-7 18M718 92l-6 18M732 96l-7 18M746 93l-7 18"/>
+        <path d="M98 236l-7 18M112 238l-6 18M126 242l-7 18"/>
+      </g>
+      <g stroke="#7fffd4" stroke-width="4" stroke-linecap="round">
+        <path d="M308 83v70"/><path d="M690 225v70"/>
+      </g>
+      <g stroke="#ff6f61" stroke-width="4" stroke-linecap="round">
+        <path d="M212 176v70"/><path d="M820 116v70"/>
+      </g>
+    </g>
+  </g>
+  <text x="112" y="532" fill="#fff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="76" font-weight="850">Ebb</text>
+  <text x="288" y="522" fill="#c8d6e7" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="34" font-weight="600">Tide, wind, and sky at a glance.</text>
+  <text x="944" y="548" fill="#7fffd4" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="28" font-weight="700">ocean cutaway</text>
+</svg>

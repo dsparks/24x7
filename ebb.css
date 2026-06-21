@@ -150,3 +150,45 @@ body{
 .r-name b{color:#7fb0ff;font-weight:700}
 .r-sub{font-size:.8rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .result-msg{padding:.6rem;color:var(--muted);font-size:.88rem;text-align:center}
+
+/* ---------- Father's Day one-day egg ---------- */
+.father-egg{position:fixed;inset:0;z-index:45;pointer-events:none;overflow:hidden}
+.father-egg-words{
+  position:absolute;left:50%;bottom:-42vh;transform:translateX(-50%);
+  display:flex;flex-direction:column;align-items:center;gap:.04em;
+  color:#f7fbff;text-shadow:0 3px 0 rgba(0,0,0,.28),0 0 18px rgba(127,255,212,.36);
+  font-weight:900;font-size:clamp(2.4rem,13vw,8rem);line-height:.88;letter-spacing:.04em;
+  animation:fatherFloat 13.5s ease-in forwards;
+}
+.father-egg-words span{display:block;filter:drop-shadow(0 12px 20px rgba(0,0,0,.4));animation:fatherRipple 2.4s ease-in-out infinite}
+.father-egg-words span:nth-child(2){color:#7fffd4}
+.father-egg-words span:nth-child(3){color:#ff6f61}
+.father-egg-words span:nth-child(2){animation-delay:.28s}
+.father-egg-words span:nth-child(3){animation-delay:.56s}
+.father-egg-bubbles i{
+  position:absolute;bottom:-28px;width:12px;height:12px;border:2px solid rgba(210,245,255,.72);
+  border-radius:50%;opacity:.8;animation:fatherBubble 7.5s ease-in forwards;
+}
+.father-egg-bubbles i:nth-child(1){left:18%;animation-delay:.2s;animation-duration:7.4s}
+.father-egg-bubbles i:nth-child(2){left:28%;width:7px;height:7px;animation-delay:1.1s;animation-duration:6.8s}
+.father-egg-bubbles i:nth-child(3){left:39%;width:16px;height:16px;animation-delay:.6s;animation-duration:8.1s}
+.father-egg-bubbles i:nth-child(4){left:57%;width:9px;height:9px;animation-delay:1.5s;animation-duration:7.2s}
+.father-egg-bubbles i:nth-child(5){left:69%;width:14px;height:14px;animation-delay:.4s;animation-duration:8.4s}
+.father-egg-bubbles i:nth-child(6){left:80%;width:8px;height:8px;animation-delay:2s;animation-duration:6.7s}
+.father-egg-bubbles i:nth-child(7){left:47%;width:10px;height:10px;animation-delay:2.5s;animation-duration:6.9s}
+@keyframes fatherFloat{
+  0%{transform:translate(-50%,0) rotate(-1deg);opacity:0}
+  8%{opacity:1}
+  82%{opacity:1}
+  100%{transform:translate(-50%,calc(-150vh - env(safe-area-inset-top))) rotate(1.5deg);opacity:0}
+}
+@keyframes fatherBubble{
+  0%{transform:translateY(0) translateX(0) scale(.7);opacity:0}
+  12%{opacity:.8}
+  100%{transform:translateY(-115vh) translateX(28px) scale(1.2);opacity:0}
+}
+@keyframes fatherRipple{
+  0%,100%{transform:translateX(-3px) skewX(-2deg) rotate(-.4deg)}
+  35%{transform:translateX(4px) skewX(2.5deg) rotate(.6deg)}
+  70%{transform:translateX(-1px) skewX(-1deg) rotate(.2deg)}
+}
