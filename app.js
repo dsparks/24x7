@@ -1596,7 +1596,7 @@ function generateTestForecast(){
 function loadTest(){
   testActive = true; lastCoords = null;     // skip cache writes & auto-refresh for synthetic data
   setPlace('Test weather', 'randomized — re-tap to re-roll');
-  applyForecast(generateTestForecast());
+  applyForecast(generateTestForecast(), Date.now());
 }
 function addTestPlace(){
   let idx = settings.places.findIndex(p => p.test);
@@ -1765,13 +1765,16 @@ async function reverseName(lat, lon){
 function readCache(){
   try { return JSON.parse(localStorage.getItem(LS.cache) || 'null'); } catch { return null; }
 }
-function writeCache(lat, lon, json){
-  localStorage.setItem(LS.cache, JSON.stringify({ lat, lon, t: Date.now(), json }));
+function writeCache(lat, lon, json, t = Date.now()){
+  localStorage.setItem(LS.cache, JSON.stringify({ lat, lon, t, json }));
 }
-function applyForecast(json){
+function formatDataTimestamp(t){
+  return t ? 'Updated ' + new Date(t).toLocaleString([], { weekday:'short', hour:'numeric', minute:'2-digit' }) : 'Updated —';
+}
+function applyForecast(json, fetchedAt = Date.now()){
   days = toDays(json);
   render();
-  $('#updatedAt').textContent = 'Updated ' + new Date().toLocaleString([], { weekday:'short', hour:'numeric', minute:'2-digit' });
+  $('#updatedAt').textContent = formatDataTimestamp(fetchedAt);
 }
 
 let loadSeq = 0, lastCoords = null, lastLoadedAt = 0;
@@ -1784,8 +1787,8 @@ async function load(lat, lon){
     const json = await fetchForecast(lat, lon);
     if (seq !== loadSeq) return;          // a newer load superseded this one
     lastLoadedAt = Date.now();
-    writeCache(lat, lon, json);
-    applyForecast(json);
+    writeCache(lat, lon, json, lastLoadedAt);
+    applyForecast(json, lastLoadedAt);
   } catch (err) {
     if (!days.length) setPlace('Couldn’t load forecast', 'Tap ⚙ to retry');
     console.warn(err);
@@ -1798,7 +1801,7 @@ async function load(lat, lon){
 function boot(){
   // 1) Instant paint from cache if we have anything to show.
   const cache = readCache();
-  if (cache?.json){ applyForecast(cache.json); }
+  if (cache?.json){ applyForecast(cache.json, cache.t); }
   else { days = placeholderDays(); render(); gridEl.classList.add('loading'); }
 
   // 2) URL deep-link wins: ?lat=&lon= or ?q=city (handy for sharing & headless testing).

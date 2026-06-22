@@ -118,6 +118,10 @@ let place = { name: '—', sub: '' };
 function setPlace(name, sub){ place = { name, sub: sub || '' }; $('#placeName').textContent = name; $('#placeSub').textContent = sub || ''; }
 let tideSource = '—';
 function setTideSrc(t){ tideSource = t; const el = $('#tideSrc'); if (el) el.textContent = t; }
+function setUpdatedAt(t){
+  const el = $('#updatedAt');
+  if (el) el.textContent = t ? 'Updated ' + new Date(t).toLocaleString([], { weekday:'short', hour:'numeric', minute:'2-digit' }) : 'Updated —';
+}
 
 /* ---------- Open-Meteo forecast (sky / wind / precip) ---------- */
 function buildUrl(lat, lon){
@@ -309,6 +313,7 @@ async function load(lat, lon){
   try {
     const fc = await (await fetch(buildUrl(lat, lon))).json();
     if (seq !== loadSeq) return;
+    setUpdatedAt(Date.now());
     const parsed = toDays(fc);
     days = parsed.days;
     enrichSun(days, lat, lon, parsed.offset);
@@ -345,6 +350,7 @@ async function load(lat, lon){
 }
 function loadTest(){
   testMode = true;
+  setUpdatedAt(Date.now());
   const parsed = toDays(genTestForecast());
   days = parsed.days;
   enrichSun(days, 41.5, -71.3, parsed.offset);    // Narragansett-ish, just for sun timing
