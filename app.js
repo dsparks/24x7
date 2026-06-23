@@ -1245,7 +1245,7 @@ function resetSlide(){
   destroyGhosts(); fxVisible(true); pendingFinish = null;
 }
 function slideCommit(axis, dir){
-  const IN = 220;
+  const IN = 140;
   fxVisible(false);                          // current pane's particles exit quietly
   applyDrag(dir < 0 ? -dragSize : dragSize, IN);   // carry the target ghost to centre
   pendingFinish = () => {                    // the actual switch; run by the timer OR a pre-empting touch
@@ -1298,9 +1298,9 @@ function endDrag(e){
   if (canSwipe(axis) && Math.abs(off) > Math.min(90, dragSize * 0.22)){
     slideCommit(axis, off < 0 ? -1 : 1);
   } else {
-    applyDrag(0, 220);                        // spring back
+    applyDrag(0, 140);                        // spring back
     clearTimeout(slideCleanupT);
-    slideCleanupT = setTimeout(resetSlide, 240);
+    slideCleanupT = setTimeout(resetSlide, 160);
   }
 }
 gridEl.addEventListener('pointerup', endDrag);

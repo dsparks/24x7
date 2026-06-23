@@ -1425,7 +1425,7 @@ function resetSlide(){
   destroyGhosts(); fxVisible(true); pendingFinish = null;
 }
 function slideCommit(dir){
-  const IN = 220;
+  const IN = 140;
   fxVisible(false);
   applyDrag(dir < 0 ? -dragSize : dragSize, IN);
   pendingFinish = () => {
@@ -1467,9 +1467,9 @@ function endGridDrag(e){
   const off = dragOff;
   if (canSwipe() && Math.abs(off) > Math.min(90, dragSize * 0.22)) slideCommit(off < 0 ? -1 : 1);
   else {
-    applyDrag(0, 220);
+    applyDrag(0, 140);
     clearTimeout(slideCleanupT);
-    slideCleanupT = setTimeout(resetSlide, 240);
+    slideCleanupT = setTimeout(resetSlide, 160);
   }
 }
 gridEl.addEventListener('pointerup', endGridDrag);
