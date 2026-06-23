@@ -9,7 +9,6 @@ const LS = {
   cache:    'grid.cache',         // last forecast payload, for instant paint
   coach:    'grid.coach',         // '1' once the first-run gesture hints are dismissed
 };
-const CACHE_TTL = 90 * 60 * 1000; // 90 min: render stale instantly, refresh quietly
 
 /* ---------- Settings ---------- */
 const DEFAULTS = {
@@ -34,7 +33,7 @@ const RUN_DIMS = [
   { key: 'temp', label: 'Temperature', unit: '°F', min: 0, max: 100, step: 10,
     value: c => cToF(c.c), def: [0, 0, 0, 1/6, 4/6, 1, 1, 5/6, 3/6, 1/6, 0] },
   { key: 'dew', label: 'Dew point', unit: '°F', min: 30, max: 80, step: 5,
-    value: c => c.dewF, def: [1, 1, 1, 1, 1, 5/6, 4/6, 3/6, 2/6, 1/6, 0] },
+    value: c => c.dewF, def: [1, 1, 1, 1, 1, 1, 5/6, 4/6, 2/6, 1/6, 0] },
   { key: 'wind', label: 'Wind speed', unit: 'mph', min: 0, max: 40, step: 5,
     value: c => c.windMph, def: [1, 1, 5/6, 4/6, 2/6, 2/6, 1/6, 1/6, 0] },
   { key: 'pop', label: 'Precip chance', unit: '%', min: 0, max: 100, step: 10,
@@ -98,6 +97,10 @@ const usLocale = () => {
 };
 function unitIsF(){ return settings.unit === 'f' || (settings.unit === 'auto' && usLocale()); }
 function clock24(){ return settings.clock === '24' || (settings.clock === 'auto' && !usLocale()); }
+
+/* ---------- Forecast-local time helpers ---------- */
+const { forecastMeta, hourFromLocalIso } = AppCore;
+function forecastNow(meta = currentForecastMeta){ return AppCore.forecastNow(meta); }
 
 /* ---------- Temp conversion + palettes ---------- */
 const cToF = c => c * 9 / 5 + 32;
@@ -198,13 +201,13 @@ function precipKind(cell){
 /* Run Index (stub — refined later). 0 (bad) → 100 (perfect run weather). */
 function runIndex(cell){
   // Geometric mean of each dimension's preference score (skip dims with no data).
-  // "Avoid" floors at 0.001 so a single avoid bites hard, and the final score is
+  // "Avoid" floors at 0.0001 so a single avoid bites hard, and the final score is
   // clamped to a minimum of 1 so the worst-possible hour reads 1 rather than 0.
   let logSum = 0, n = 0;
   for (const dim of RUN_DIMS){
     const v = dim.value(cell);
     if (v == null || Number.isNaN(v)) continue;
-    const s = Math.max(0.001, Math.min(1, curveScore(dim, settings.runCurves[dim.key], v)));
+    const s = Math.max(0.0001, Math.min(1, curveScore(dim, settings.runCurves[dim.key], v)));
     logSum += Math.log(s); n++;
   }
   if (!n) return 50;
@@ -237,6 +240,7 @@ function fmtHourLong(h){
 }
 
 /* ---------- State ---------- */
+let currentForecastMeta = null;
 let days = [];        // [{ date:Date, label, isToday, cells:[{c,pop,appF,windMph,rh,iso,past,now}|null x24] }]
 let place = { name: '—', sub: '' };
 let orientation = null;
@@ -416,9 +420,7 @@ function buildUrl(lat, lon){
 }
 
 async function fetchForecast(lat, lon){
-  const r = await fetch(buildUrl(lat, lon));
-  if (!r.ok) throw new Error(`Weather HTTP ${r.status}`);
-  return r.json();
+  return AppCore.fetchJson(buildUrl(lat, lon), { label: 'Weather', timeoutMs: 15000 });
 }
 
 /* Parse Open-Meteo hourly arrays into day columns of 24 hours each. */
@@ -426,7 +428,7 @@ function toDays(j){
   const h = j.hourly || {};
   const time = h.time || [];
   const byDate = new Map();
-  const todayKey = ymd(new Date());
+  const todayKey = forecastNow(forecastMeta(j)).key;
 
   for (let i = 0; i < time.length; i++){
     const iso = time[i];
@@ -453,8 +455,7 @@ function toDays(j){
   const dly = j.daily || {};
   const sun = new Map();
   (dly.time || []).forEach((d, i) => {
-    const toH = s => { if (!s) return null; const t = new Date(s); return t.getHours() + t.getMinutes() / 60; };
-    sun.set(d, { riseH: toH(dly.sunrise?.[i]), setH: toH(dly.sunset?.[i]) });
+    sun.set(d, { riseH: hourFromLocalIso(dly.sunrise?.[i]), setH: hourFromLocalIso(dly.sunset?.[i]) });
   });
 
   return [...byDate.entries()].slice(0, 7).map(([key]) => {
@@ -487,13 +488,13 @@ function placeholderDays(){
 /* ---------- Rendering ---------- */
 function isPortrait(){ return window.innerHeight >= window.innerWidth; }
 
-function cellRGB(cell){
+function cellRGB(cell, view = settings.view){
   if (!cell || cell.c == null) return [17,21,28];
-  return settings.view === 'run' ? runRGB(runIndex(cell)) : tempRGB(cToF(cell.c));
+  return view === 'run' ? runRGB(runIndex(cell)) : tempRGB(cToF(cell.c));
 }
-function cellNumber(cell){
+function cellNumber(cell, view = settings.view){
   if (!settings.showNumbers || !cell || cell.c == null) return null;
-  return settings.view === 'run' ? String(runIndex(cell)) : String(Math.round(displayTemp(cell.c)));
+  return view === 'run' ? String(runIndex(cell)) : String(Math.round(displayTemp(cell.c)));
 }
 
 let nowFrac = 0;
@@ -535,18 +536,19 @@ function dayShadeEl(day, di, portrait){
   return el;
 }
 // Ink that accounts for the night shade so numbers stay legible.
-function effInk(di, h, c){
-  const d = darknessAt(days[di], h + 0.5);
+function inkFor(day, h, c){
+  const d = darknessAt(day, h + 0.5);
   return d ? pickInk([c[0] * (1 - d), c[1] * (1 - d), c[2] * (1 - d)]) : pickInk(c);
 }
+function effInk(di, h, c){ return inkFor(days[di], h, c); }
 // Re-placeable current-time line: located by data-attrs after the grid is in the DOM.
 function placeNowLine(){
   gridEl.querySelectorAll('.nowline').forEach(n => n.remove());
   const di = days.findIndex(d => d.isToday);
   if (di < 0) return;
-  const now = new Date();
-  nowFrac = now.getMinutes() / 60;
-  const cell = gridEl.querySelector(`.cell[data-di="${di}"][data-h="${now.getHours()}"]`);
+  const now = forecastNow();
+  nowFrac = now.minute / 60;
+  const cell = gridEl.querySelector(`.cell[data-di="${di}"][data-h="${now.hour}"]`);
   if (cell && !cell.classList.contains('empty')) cell.appendChild(nowLineEl());
 }
 
@@ -606,7 +608,7 @@ function render(){
   if (!days.length) return;
   const portrait = isPortrait();
   orientation = portrait ? 'p' : 'l';
-  nowFrac = new Date().getMinutes() / 60;
+  nowFrac = forecastNow().minute / 60;
   const n = days.length;
   const frag = document.createDocumentFragment();
   gridEl.className = 'grid ' + orientation;
@@ -637,6 +639,7 @@ function render(){
   gridEl.replaceChildren(frag);
   placeNowLine();                         // now that cells are in the DOM
   layoutFx();                             // build precip in the same pass (getBoundingClientRect forces layout)
+  refreshTip();                           // re-pin an open detail popup to the same cell with fresh data
 }
 
 /* ---------- Precipitation particle engine (canvas) ----------
@@ -810,7 +813,8 @@ function fitHeaders(){
   if (hourEl){
     const w = hourEl.clientWidth, h = hourEl.clientHeight;
     const len = clock24() ? 2 : 3;                  // "03" vs "12a"
-    const px = Math.min(h * 0.86, w / (len * CW)) * HOUR_LABEL_SCALE;
+    const lscale = portrait ? 1 : 0.85;             // time-axis labels read ~15% smaller in landscape
+    const px = Math.min(h * 0.86, w / (len * CW)) * HOUR_LABEL_SCALE * lscale;
     gridEl.style.setProperty('--hourfs', Math.max(7, Math.round(px)) + 'px');
   }
 }
@@ -1074,7 +1078,7 @@ document.addEventListener('visibilitychange', () => {
 });
 
 /* ---------- Tap-a-cell readout ---------- */
-let tipTimer = null, selEl = null, suppressTipGridClickUntil = 0;
+let tipTimer = null, selEl = null, selDi = null, selH = null, suppressTipGridClickUntil = 0;
 gridEl.addEventListener('click', e => {
   if (performance.now() < suppressTipGridClickUntil) return;
   if (lpFired || swiped){ lpFired = false; swiped = false; return; }   // long-press/swipe: not a tap
@@ -1131,42 +1135,181 @@ function toggleView(){
   if (!sheetEl.hidden) syncSheet();
 }
 function cycleLocation(dir){
-  const count = settings.places.length + 1;      // current location + saved places
-  if (count <= 1) return false;
-  const cur = settings.activeIdx == null ? 0 : settings.activeIdx + 1;
-  const next = (cur + dir + count) % count;
-  switchTo(next === 0 ? null : next - 1);
+  const t = cycleStep(dir);
+  if (t === undefined) return false;
+  switchTo(t);                                    // t may be null ("my location") — that's valid
   showLegend();
   return true;
 }
 
 // Grid gestures: long-press → legend; horizontal swipe → location; vertical swipe → view.
+// The swipe is a real carousel: the live grid (+ its two particle canvases) and a
+// neighbor "ghost" pane on each side translate together under the finger, so you drag
+// the next location/view into view instead of dragging onto black. On release it either
+// completes (neighbor slides to centre, then becomes the real grid) or springs back.
+// Ghosts are static colour grids (no particle layer) built from the prefetched forecast
+// for an instant paint; an un-warmed neighbor falls back to a loading shimmer.
 let lpTimer = 0, lpFired = false, swiped = false, lpX = 0, lpY = 0;
+let dragAxis = null, dragOff = 0, dragSize = 0, slideCleanupT = 0, pendingFinish = null;
+let ghostPrev = null, ghostNext = null;
+const SWIPE_EASE = 'cubic-bezier(.22,.61,.36,1)';
+const fxEls = () => [fx.canvas, fx.wcanvas].filter(Boolean);
+function fxVisible(on){ for (const el of fxEls()) el.style.opacity = on ? '' : '0'; }
+function canSwipe(axis){ return axis === 'x' ? cycleList().length > 1 : true; }
+
+// One static, non-interactive colour grid for `data` painted in `view` — mirrors render()'s
+// structure but skips the fx/particle wiring entirely.
+function ghostCell(di, h, data, view){
+  const cell = data[di]?.cells[h];
+  const el = document.createElement('div');
+  el.className = 'cell'; el.dataset.di = di; el.dataset.h = h;
+  if (!cell || cell.c == null){ el.classList.add('empty'); return el; }
+  const c = cellRGB(cell, view);
+  el.style.background = rgbStr(c);
+  const num = cellNumber(cell, view);
+  if (num != null){
+    const t = document.createElement('span');
+    t.className = 't'; t.style.color = inkFor(data[di], h, c); t.textContent = num;
+    el.appendChild(t);
+  }
+  return el;
+}
+function buildGhost(data, view){
+  const portrait = isPortrait();
+  const el = document.createElement('div');
+  el.className = 'grid ghost ' + (portrait ? 'p' : 'l');
+  const n = data.length;
+  if (portrait){
+    el.style.gridTemplateColumns = `var(--label) repeat(${n}, minmax(0,1fr))`;
+    el.style.gridTemplateRows = `var(--label-day) repeat(24, minmax(0,1fr))`;
+    el.appendChild(corner());
+    data.forEach(d => el.appendChild(dayHead(d)));
+    for (let h = 0; h < 24; h++){
+      el.appendChild(hourHead(h));
+      for (let di = 0; di < n; di++) el.appendChild(ghostCell(di, h, data, view));
+    }
+  } else {
+    el.style.gridTemplateColumns = `var(--label-day) repeat(24, minmax(0,1fr))`;
+    el.style.gridTemplateRows = `var(--label) repeat(${n}, minmax(0,1fr))`;
+    el.appendChild(corner());
+    for (let h = 0; h < 24; h++) el.appendChild(hourHead(h));
+    data.forEach((d, di) => {
+      el.appendChild(dayHead(d));
+      for (let h = 0; h < 24; h++) el.appendChild(ghostCell(di, h, data, view));
+    });
+  }
+  data.forEach((d, di) => { const s = dayShadeEl(d, di, portrait); if (s) el.appendChild(s); });
+  return el;
+}
+function mountGhost(data, view, rect, side){
+  const el = buildGhost(data || placeholderDays(), view);
+  if (!data) el.classList.add('loading');     // un-warmed neighbor → shimmer rather than black
+  el.style.setProperty('--dayfs', gridEl.style.getPropertyValue('--dayfs'));   // match fitted header sizes
+  el.style.setProperty('--hourfs', gridEl.style.getPropertyValue('--hourfs'));
+  Object.assign(el.style, {
+    position: 'fixed', left: rect.left + 'px', top: rect.top + 'px',
+    width: rect.width + 'px', height: rect.height + 'px',
+    margin: '0', zIndex: '5', pointerEvents: 'none',
+  });
+  el.style.transform = dragAxis === 'x' ? `translate3d(${side * dragSize}px,0,0)` : `translate3d(0,${side * dragSize}px,0)`;
+  document.body.appendChild(el);
+  return el;
+}
+function buildCarousel(axis){
+  const rect = gridEl.getBoundingClientRect();
+  dragSize = axis === 'x' ? rect.width : rect.height;
+  let prevData, nextData, view = settings.view;
+  if (axis === 'x'){
+    prevData = neighborDays(-1); nextData = neighborDays(1);
+  } else {
+    view = settings.view === 'run' ? 'temp' : 'run';   // the other view, both sides
+    prevData = nextData = days;
+  }
+  ghostPrev = mountGhost(prevData, view, rect, -1);
+  ghostNext = mountGhost(nextData, view, rect, 1);
+}
+function destroyGhosts(){ ghostPrev?.remove(); ghostNext?.remove(); ghostPrev = ghostNext = null; }
+function slideTransform(el, px, ms){
+  el.style.transition = ms ? `transform ${ms}ms ${SWIPE_EASE}` : 'none';
+  el.style.transform = dragAxis === 'x' ? `translate3d(${px}px,0,0)` : `translate3d(0,${px}px,0)`;
+}
+// Move the live grid + canvases by `off`, and the two ghosts by their base ±size + off.
+function applyDrag(off, ms){
+  for (const el of [gridEl, ...fxEls()]) slideTransform(el, off, ms);
+  if (ghostPrev) slideTransform(ghostPrev, -dragSize + off, ms);
+  if (ghostNext) slideTransform(ghostNext, dragSize + off, ms);
+}
+function resetSlide(){
+  dragAxis = null;
+  for (const el of [gridEl, ...fxEls()]){ el.style.transition = ''; el.style.transform = ''; }
+  destroyGhosts(); fxVisible(true); pendingFinish = null;
+}
+function slideCommit(axis, dir){
+  const IN = 220;
+  fxVisible(false);                          // current pane's particles exit quietly
+  applyDrag(dir < 0 ? -dragSize : dragSize, IN);   // carry the target ghost to centre
+  pendingFinish = () => {                    // the actual switch; run by the timer OR a pre-empting touch
+    pendingFinish = null;
+    if (axis === 'x'){
+      const cycleDir = dir < 0 ? 1 : -1;     // swipe left → next location
+      const nd = neighborDays(cycleDir);     // warm data for the target (real / my-location / test)
+      cycleLocation(cycleDir);               // switch + start the background refresh
+      if (nd){ days = nd; render(); gridEl.classList.remove('loading'); }   // instant, matches the ghost
+      else { days = placeholderDays(); render(); gridEl.classList.add('loading'); }
+    } else {
+      toggleView();                          // Temp/Run share data — already coloured
+    }
+    resetSlide();                            // grid (now the new content) snaps to centre; ghosts gone
+    layoutFx();                              // realign + restart particles for the new pane
+  };
+  clearTimeout(slideCleanupT);
+  slideCleanupT = setTimeout(() => pendingFinish && pendingFinish(), IN + 10);
+}
+
 gridEl.addEventListener('pointerdown', e => {
-  lpFired = false; swiped = false; lpX = e.clientX; lpY = e.clientY;
+  clearTimeout(slideCleanupT);
+  if (pendingFinish) pendingFinish();          // re-touch mid-commit → finish the switch, don't drop it
+  else if (ghostPrev || ghostNext) resetSlide();
+  lpFired = false; swiped = false; dragAxis = null; dragOff = 0;
+  lpX = e.clientX; lpY = e.clientY;
+  try { gridEl.setPointerCapture(e.pointerId); } catch {}
   lpTimer = setTimeout(() => { lpFired = true; showLegend(); }, 480);
 });
 gridEl.addEventListener('pointermove', e => {
-  if (Math.abs(e.clientX - lpX) > 10 || Math.abs(e.clientY - lpY) > 10) clearTimeout(lpTimer);
-});
-gridEl.addEventListener('pointerup', e => {
-  clearTimeout(lpTimer);
   const dx = e.clientX - lpX, dy = e.clientY - lpY;
-  const ax = Math.abs(dx), ay = Math.abs(dy);
-  if (ax > 55 && ax > ay * 1.4){
-    swiped = true;
-    cycleLocation(dx < 0 ? 1 : -1);
-  } else if (ay > 55 && ay > ax * 1.4){
-    swiped = true;
-    toggleView();
+  if (!dragAxis){
+    if (lpFired || (Math.abs(dx) < 10 && Math.abs(dy) < 10)) return;
+    clearTimeout(lpTimer);
+    dragAxis = Math.abs(dx) >= Math.abs(dy) ? 'x' : 'y';
+    swiped = true;                           // suppress the tap-to-readout click
+    dragSize = dragAxis === 'x' ? gridEl.clientWidth : gridEl.clientHeight;
+    if (canSwipe(dragAxis)) buildCarousel(dragAxis);
   }
+  let off = dragAxis === 'x' ? dx : dy;
+  if (!canSwipe(dragAxis)) off *= 0.2;       // nowhere to go → rubber-band
+  dragOff = off;
+  applyDrag(off, 0);
 });
-gridEl.addEventListener('pointercancel', () => clearTimeout(lpTimer));
+function endDrag(e){
+  clearTimeout(lpTimer);
+  try { gridEl.releasePointerCapture(e.pointerId); } catch {}
+  if (!dragAxis) return;
+  const axis = dragAxis, off = dragOff;
+  if (canSwipe(axis) && Math.abs(off) > Math.min(90, dragSize * 0.22)){
+    slideCommit(axis, off < 0 ? -1 : 1);
+  } else {
+    applyDrag(0, 220);                        // spring back
+    clearTimeout(slideCleanupT);
+    slideCleanupT = setTimeout(resetSlide, 240);
+  }
+}
+gridEl.addEventListener('pointerup', endDrag);
+gridEl.addEventListener('pointercancel', endDrag);
 function showTip(di, h, el){
-  const cell = days[di].cells[h];
+  const cell = days[di]?.cells[h];
   if (!cell) return;
   if (selEl) selEl.classList.remove('sel');
-  selEl = el; el.classList.add('sel');
+  selEl = el; selDi = di; selH = h; el.classList.add('sel');
 
   const color = rgbStr(cellRGB(cell));
   const tF = Math.round(displayTemp(cell.c));
@@ -1201,6 +1344,16 @@ function hideTip(){
   clearTimeout(tipTimer);
   tipEl.hidden = true;
   if (selEl){ selEl.classList.remove('sel'); selEl = null; }
+  selDi = selH = null;
+}
+// After a re-render (location swipe, view toggle, refresh), re-pin the popup to the
+// same cell in the freshly-rendered grid so it shows current data — or hide it if
+// that cell no longer exists.
+function refreshTip(){
+  if (tipEl.hidden || selDi == null) return;
+  const el = gridEl.querySelector(`.cell[data-di="${selDi}"][data-h="${selH}"]`);
+  if (el && !el.classList.contains('empty')) showTip(selDi, selH, el);
+  else hideTip();
 }
 function dismissTipFromPopup(){
   suppressTipGridClickUntil = performance.now() + 450;
@@ -1456,9 +1609,7 @@ function setPlace(name, sub){
 
 async function geocode(q, signal){
   const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=8&language=en&format=json`;
-  const r = await fetch(url, signal ? { signal } : undefined);
-  if (!r.ok) throw new Error('search failed');
-  const j = await r.json();
+  const j = await AppCore.fetchJson(url, { signal, label: 'Search', timeoutMs: 12000 });
   return j.results || [];
 }
 /* ---------- Saved locations ---------- */
@@ -1503,6 +1654,12 @@ function switchTo(idx){
   const p = idx != null ? settings.places[idx] : null;
   if (p?.test){ loadTest(); }
   else if (p){ testActive = false; setPlace(p.name, p.admin || ''); load(p.lat, p.lon); }
+  else if (myCoords){                                                       // skip GPS — coords already known
+    testActive = false;
+    setPlace(myPlace?.name || 'Current location', myPlace?.sub || '');      // show the cached name immediately
+    load(myCoords.lat, myCoords.lon);
+    reverseName(myCoords.lat, myCoords.lon).then(p => { if (p) myPlace = p; });
+  }
   else { testActive = false; setPlace('Locating…', ''); locate(); }
 }
 function removePlace(i){
@@ -1596,9 +1753,10 @@ function generateTestForecast(){
 function loadTest(){
   testActive = true; lastCoords = null;     // skip cache writes & auto-refresh for synthetic data
   setPlace('Test weather', 'randomized — re-tap to re-roll');
-  applyForecast(generateTestForecast(), Date.now());
+  applyForecast(testForecast(), Date.now());   // reuse the cached week so swipe-in matches the ghost & is instant
 }
 function addTestPlace(){
+  testForecastCache = null;                 // explicit (re-)roll: regenerate the week
   let idx = settings.places.findIndex(p => p.test);
   if (idx < 0) idx = settings.places.push({ name: '🎲 Test weather', test: true }) - 1;
   switchTo(idx);                            // re-rolls even if it was already active
@@ -1744,76 +1902,165 @@ searchInput.addEventListener('focus', () => { if (hits.length || searchInput.val
 function locate(){
   if (!('geolocation' in navigator)){ setPlace('Location unavailable', 'Search in settings'); return; }
   navigator.geolocation.getCurrentPosition(
-    pos => { setPlace('Current location', ''); load(pos.coords.latitude, pos.coords.longitude); reverseName(pos.coords.latitude, pos.coords.longitude); },
+    pos => {
+      myCoords = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+      setPlace(myPlace?.name || 'Current location', myPlace?.sub || '');   // instant if we've named it before
+      load(myCoords.lat, myCoords.lon);
+      reverseName(myCoords.lat, myCoords.lon).then(p => { if (p) myPlace = p; });
+    },
     () => setPlace('Location blocked', 'Search in settings ⚙'),
     { enableHighAccuracy: false, timeout: 12000, maximumAge: 600000 }
   );
 }
-async function reverseName(lat, lon){
+async function lookupName(lat, lon){             // reverse-geocode → { name, sub } | null (no UI change)
   try {
     const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=10&addressdetails=1`;
-    const j = await (await fetch(url)).json();
+    const j = await AppCore.fetchJson(url, { label: 'Reverse geocode', timeoutMs: 12000 });
     const a = j.address || {};
     const name = a.city || a.town || a.village || a.hamlet || a.municipality || a.suburb || a.county || j.name;
     const country = a.country_code ? a.country_code.toUpperCase() : '';
     const sub = [a.state, country].filter(Boolean).join(', ');
-    if (name) setPlace(name, sub);
-  } catch { /* name is cosmetic; ignore */ }
+    return name ? { name, sub } : null;
+  } catch { return null; /* name is cosmetic; ignore */ }
+}
+async function reverseName(lat, lon){            // …and reflect it in the header
+  const p = await lookupName(lat, lon);
+  if (p) setPlace(p.name, p.sub);
+  return p;
 }
 
 /* ---------- Load orchestration (instant cache → fresh) ---------- */
 function readCache(){
-  try { return JSON.parse(localStorage.getItem(LS.cache) || 'null'); } catch { return null; }
+  return AppCore.readJson(LS.cache);
 }
 function writeCache(lat, lon, json, t = Date.now()){
-  localStorage.setItem(LS.cache, JSON.stringify({ lat, lon, t, json }));
+  AppCore.writeJson(LS.cache, { lat, lon, t, json });
 }
-function formatDataTimestamp(t){
-  return t ? 'Updated ' + new Date(t).toLocaleString([], { weekday:'short', hour:'numeric', minute:'2-digit' }) : 'Updated —';
+function formatDataTimestamp(t, source = 'fresh'){
+  const prefix = source === 'cached' ? 'Cached' : source === 'stale' ? 'Stale' : 'Updated';
+  return AppCore.formatUpdated(t, prefix);
 }
-function applyForecast(json, fetchedAt = Date.now()){
+function applyForecast(json, fetchedAt = Date.now(), source = 'fresh'){
+  currentForecastMeta = forecastMeta(json);
   days = toDays(json);
   render();
-  $('#updatedAt').textContent = formatDataTimestamp(fetchedAt);
+  $('#updatedAt').textContent = formatDataTimestamp(fetchedAt, source);
 }
 
 let loadSeq = 0, lastCoords = null, lastLoadedAt = 0;
+function cacheMatches(cache, lat, lon){
+  return AppCore.cacheMatches(cache, lat, lon);
+}
+function showLoadingScaffold(){
+  currentForecastMeta = null;
+  days = placeholderDays();
+  render();
+  gridEl.classList.add('loading');
+}
 async function load(lat, lon){
   testActive = false;
   const seq = ++loadSeq;
   lastCoords = { lat, lon };
-  gridEl.classList.add('loading');
+  const warm = fcCache.get(fcKey(lat, lon));        // already have a recent forecast? paint it now
+  if (warm) applyForecast(warm.json, warm.t, 'cached');
+  else showLoadingScaffold();
   try {
     const json = await fetchForecast(lat, lon);
     if (seq !== loadSeq) return;          // a newer load superseded this one
     lastLoadedAt = Date.now();
     writeCache(lat, lon, json, lastLoadedAt);
+    cacheForecast(lat, lon, json, lastLoadedAt);
     applyForecast(json, lastLoadedAt);
+    prefetchNeighbors();                   // warm the panes one swipe to either side
   } catch (err) {
-    if (!days.length) setPlace('Couldn’t load forecast', 'Tap ⚙ to retry');
+    if (warm) $('#updatedAt').textContent = formatDataTimestamp(warm.t, 'stale');
+    else {
+      setPlace('Couldn’t load forecast', 'Tap ⚙ to retry');
+      $('#updatedAt').textContent = 'Forecast unavailable';
+    }
     console.warn(err);
   } finally {
     if (seq === loadSeq) gridEl.classList.remove('loading');
   }
 }
 
+/* ---------- Neighbor prefetch ----------
+ * A swipe should reveal a real grid, not a blank pane. We keep recent forecasts in
+ * memory and, after each load, quietly fetch the locations one swipe to either side
+ * so the incoming pane paints instantly (the fresh load then refreshes it). The other
+ * VIEW needs no prefetch — Temp and Run share the same data, just recolored. */
+let myCoords = null, myPlace = null;              // last GPS fix + its resolved {name, sub}
+const fcCache = new Map();                        // "lat,lon" -> { json, t }
+const fcKey = (lat, lon) => `${(+lat).toFixed(3)},${(+lon).toFixed(3)}`;
+function cacheForecast(lat, lon, json, t = Date.now()){
+  fcCache.set(fcKey(lat, lon), { json, t });
+  while (fcCache.size > 8) fcCache.delete(fcCache.keys().next().value);   // bound it
+}
+const sameSpot = (a, b) => a && b && Math.abs(a.lat - b.lat) < 0.05 && Math.abs(a.lon - b.lon) < 0.05;
+function cycleList(){                               // ordered cycle: "my location" (null) + saved places,
+  const list = [];                                 // but "my location" is dropped when it duplicates a saved place
+  const dup = myCoords && settings.places.some(p => !p.test && sameSpot(myCoords, p));
+  if (!dup) list.push(null);
+  settings.places.forEach((_, i) => list.push(i));
+  return list;
+}
+function cycleStep(dir){                            // the slot one step (in `dir`) from the active one
+  const list = cycleList();
+  if (list.length <= 1) return undefined;
+  let i = list.indexOf(settings.activeIdx == null ? null : settings.activeIdx);
+  if (i < 0) i = 0;                                 // active slot was deduped out → start at the first
+  return list[(i + dir + list.length) % list.length];
+}
+function targetIndex(dir){ return cycleStep(dir); }  // null = "my location", number = saved, undefined = no cycle
+function coordsForIndex(idx){
+  if (idx === undefined) return null;
+  if (idx === null) return myCoords;               // may be null if never located
+  const p = settings.places[idx];
+  return p && !p.test && p.lat != null ? { lat: p.lat, lon: p.lon } : null;
+}
+let testForecastCache = null;                       // generated once; reused so the test pane is instant
+function testForecast(){ return testForecastCache || (testForecastCache = generateTestForecast()); }
+function neighborDays(dir){                          // warm `days` for the pane in `dir` (real / my-location / test), or null
+  const idx = targetIndex(dir);
+  if (idx === undefined) return null;
+  const p = idx == null ? null : settings.places[idx];
+  if (p?.test) return toDays(testForecast());        // synthetic week — generate-once, no fetch
+  const c = coordsForIndex(idx);
+  const j = c ? fcCache.get(fcKey(c.lat, c.lon))?.json : null;
+  return j ? toDays(j) : null;
+}
+function prefetchNeighbors(){
+  // Warm both adjacent panes AND Current Location (even when it isn't adjacent), so
+  // swiping into it never waits on geolocation + fetch. Pre-generate the test week too.
+  const coords = [coordsForIndex(targetIndex(1)), coordsForIndex(targetIndex(-1)), myCoords].filter(Boolean);
+  const seen = new Set();
+  for (const c of coords){
+    const k = fcKey(c.lat, c.lon);
+    if (seen.has(k) || fcCache.has(k)) continue;
+    seen.add(k);
+    fetchForecast(c.lat, c.lon).then(json => cacheForecast(c.lat, c.lon, json)).catch(() => {});
+  }
+  if (settings.places.some(p => p.test)) testForecast();
+}
+
 /* ---------- Boot ---------- */
 function boot(){
-  // 1) Instant paint from cache if we have anything to show.
+  // 1) Read persisted cache, but only paint it after we know it matches the target.
   const cache = readCache();
-  if (cache?.json){ applyForecast(cache.json, cache.t); }
-  else { days = placeholderDays(); render(); gridEl.classList.add('loading'); }
+  if (cache?.json && cache.lat != null && cache.lon != null) cacheForecast(cache.lat, cache.lon, cache.json, cache.t || Date.now());
 
   // 2) URL deep-link wins: ?lat=&lon= or ?q=city (handy for sharing & headless testing).
   const params = new URLSearchParams(location.search);
   const qlat = parseFloat(params.get('lat')), qlon = parseFloat(params.get('lon')), qq = params.get('q');
   if (Number.isFinite(qlat) && Number.isFinite(qlon)){
+    if (cacheMatches(cache, qlat, qlon)) applyForecast(cache.json, cache.t, 'cached'); else showLoadingScaffold();
     setPlace('Pinned location', `${qlat.toFixed(2)}, ${qlon.toFixed(2)}`);
     load(qlat, qlon); reverseName(qlat, qlon);
     return;
   }
   if (qq){
     if (isTestQuery(qq)){ loadTest(); return; }
+    showLoadingScaffold();
     setPlace('Locating…', '');
     geocode(qq).then(res => {
       const r = res[0];
@@ -1827,9 +2074,12 @@ function boot(){
   const active = settings.activeIdx != null ? settings.places[settings.activeIdx] : null;
   if (active?.test){ loadTest(); return; }
   if (active){
+    if (cacheMatches(cache, active.lat, active.lon)) applyForecast(cache.json, cache.t, 'cached'); else showLoadingScaffold();
     setPlace(active.name || 'Saved location', active.admin || '');
     load(active.lat, active.lon);
   } else {
+    if (cache?.json){ applyForecast(cache.json, cache.t, 'cached'); }
+    else showLoadingScaffold();
     setPlace('Locating…', '');
     // If cache exists, refresh its coords first for instant continuity, then geolocate.
     if (cache?.lat != null) load(cache.lat, cache.lon);
@@ -1853,10 +2103,28 @@ window.addEventListener('orientationchange', () => setTimeout(() => { render(); 
 setInterval(() => { if (days.length) placeNowLine(); }, 30000);
 // Auto-refresh the forecast every 15 min so it never goes stale while left open.
 setInterval(() => { if (lastCoords) load(lastCoords.lat, lastCoords.lon); }, 15 * 60 * 1000);
+// Re-acquire Current Location every 5 min so its pane stays current as you move. Silent
+// and gated on myCoords, so it only runs once Current Location has actually been used
+// (never prompts a saved-place-only user); a denied permission just no-ops.
+function refreshMyCoords(){
+  if (!myCoords || !('geolocation' in navigator)) return;
+  navigator.geolocation.getCurrentPosition(pos => {
+    const lat = pos.coords.latitude, lon = pos.coords.longitude;
+    const moved = haversineKm(myCoords.lat, myCoords.lon, lat, lon) > 1;   // ignore <1km jitter
+    myCoords = { lat, lon };
+    if (!moved) return;
+    if (settings.activeIdx == null && !testActive){
+      load(lat, lon);                                                        // viewing it now → update grid + header
+      reverseName(lat, lon).then(p => { if (p) myPlace = p; });
+    } else {
+      fetchForecast(lat, lon).then(j => cacheForecast(lat, lon, j)).catch(() => {});   // keep forecast warm
+      lookupName(lat, lon).then(p => { if (p) myPlace = p; });               // refresh cached name, no UI change
+    }
+  }, () => {}, { enableHighAccuracy: false, timeout: 12000, maximumAge: 300000 });
+}
+setInterval(refreshMyCoords, 5 * 60 * 1000);
 
 // Register service worker for offline / installable PWA (no-op on file://).
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
-}
+AppCore.registerFreshServiceWorker('sw.js');
 
 boot();

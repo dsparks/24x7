@@ -1,3 +1,10 @@
+/* Self-hosted Cascadia Mono (SIL OFL 1.1), Latin subset via Fontsource (~17KB/weight).
+   url()-only src (no local()) so every device renders the identical face, online or off. */
+@font-face{font-family:'Cascadia Mono';font-style:normal;font-weight:400;font-display:swap;src:url('fonts/cascadia-mono-400.woff2') format('woff2')}
+@font-face{font-family:'Cascadia Mono';font-style:normal;font-weight:500;font-display:swap;src:url('fonts/cascadia-mono-500.woff2') format('woff2')}
+@font-face{font-family:'Cascadia Mono';font-style:normal;font-weight:600;font-display:swap;src:url('fonts/cascadia-mono-600.woff2') format('woff2')}
+@font-face{font-family:'Cascadia Mono';font-style:normal;font-weight:700;font-display:swap;src:url('fonts/cascadia-mono-700.woff2') format('woff2')}
+
 :root{
   --bg:#05070c;
   --line:rgba(255,255,255,.10);
@@ -6,12 +13,15 @@
   --label-day:3.0ch;
   --ink:#e8eaed;
   --muted:#9aa3af;
+  /* Modern-monospace identity, shared with 24x7. Cascadia Mono first (the previewed
+     face); platform mono fallbacks elsewhere. Swap for a self-hosted .woff2 later. */
+  --font:'Cascadia Mono','Cascadia Code',ui-monospace,'SFMono-Regular',Menlo,'Segoe UI Mono',Consolas,'Roboto Mono',monospace;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{height:100%;margin:0;overflow:hidden;overscroll-behavior:none}
 body{
   background:var(--bg);color:var(--ink);
-  font-family:system-ui,-apple-system,"Segoe UI",Roboto,Ubuntu,"Helvetica Neue",Arial,sans-serif;
+  font-family:var(--font);
   padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
 
@@ -45,6 +55,19 @@ body{
    black water + chop + precip + stars on top. */
 .cell{position:relative;overflow:hidden;background:#0b1020}
 .cell.empty{background:#070a11}
+.grid.ghost{user-select:none;touch-action:none}
+.ghost-water{
+  position:absolute;left:0;right:0;bottom:0;
+  background:#000;
+  box-shadow:0 -1px 0 rgba(210,235,255,.18);
+  pointer-events:none;
+}
+.grid.loading .cell{
+  background:linear-gradient(100deg,#07101a 30%,#102033 50%,#07101a 70%);
+  background-size:200% 100%;
+  animation:sh 1.2s linear infinite;
+}
+@keyframes sh{to{background-position:-200% 0}}
 
 /* animation overlay */
 .fx{position:fixed;z-index:6;pointer-events:none;left:0;top:0}

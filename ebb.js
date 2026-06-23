@@ -11,6 +11,9 @@ const lerp = (a, b, t) => a + (b - a) * t;
 const rand = (a, b) => a + Math.random() * (b - a);
 const pad = n => String(n).padStart(2, '0');
 const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const { forecastMeta } = AppCore;
+function forecastNow(meta = currentForecastMeta){ return AppCore.forecastNow(meta); }
+const offsetForCalc = offset => Number.isFinite(offset) ? offset : -new Date().getTimezoneOffset() * 60;
 function haversineKm(aLat, aLon, bLat, bLon){
   const R = 6371, toR = d => d * Math.PI / 180;
   const dLat = toR(bLat - aLat), dLon = toR(bLon - aLon);
@@ -118,9 +121,12 @@ let place = { name: '—', sub: '' };
 function setPlace(name, sub){ place = { name, sub: sub || '' }; $('#placeName').textContent = name; $('#placeSub').textContent = sub || ''; }
 let tideSource = '—';
 function setTideSrc(t){ tideSource = t; const el = $('#tideSrc'); if (el) el.textContent = t; }
-function setUpdatedAt(t){
+function setUpdatedAt(t, source = 'fresh'){
   const el = $('#updatedAt');
-  if (el) el.textContent = t ? 'Updated ' + new Date(t).toLocaleString([], { weekday:'short', hour:'numeric', minute:'2-digit' }) : 'Updated —';
+  if (!el) return;
+  if (source === 'loading' && !t){ el.textContent = 'Loading...'; return; }
+  const prefix = source === 'cached' ? 'Cached' : source === 'stale' ? 'Stale' : source === 'loading' ? 'Loading' : 'Updated';
+  el.textContent = AppCore.formatUpdated(t, prefix);
 }
 
 /* ---------- Open-Meteo forecast (sky / wind / precip) ---------- */
@@ -134,13 +140,12 @@ function buildUrl(lat, lon){
 }
 async function geocode(q, signal){
   const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=8&language=en&format=json`;
-  const r = await fetch(url, signal ? { signal } : undefined);
-  if (!r.ok) throw new Error('search failed');
-  return (await r.json()).results || [];
+  return (await AppCore.fetchJson(url, { signal, label: 'Search', timeoutMs: 12000 })).results || [];
 }
 function toDays(j){
   const h = j.hourly || {}, time = h.time || [];
-  const offset = j.utc_offset_seconds || 0;
+  const meta = forecastMeta(j);
+  const todayKey = forecastNow(meta).key;
   const byDate = new Map();
   for (let i = 0; i < time.length; i++){
     const iso = time[i], dateKey = iso.slice(0, 10), hour = +iso.slice(11, 13);
@@ -165,21 +170,20 @@ function toDays(j){
   const keys = [...byDate.keys()].sort().slice(0, 7);
   const days = keys.map(k => {
     const d = new Date(k + 'T00:00');
-    return { date: d, dow: WD[d.getDay()], dnum: d.getDate(), isToday: ymd(d) === ymd(new Date()), cells: byDate.get(k) };
+    return { date: d, dow: WD[d.getDay()], dnum: d.getDate(), isToday: k === todayKey, cells: byDate.get(k) };
   });
-  return { days, offset };
+  return { days, offset: meta.offset, meta };
 }
 
 /* ---------- NOAA tides (US), with synthetic fallback ---------- */
 const NOAA_STATIONS = 'https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations.json?type=tidepredictions';
 async function getStations(){
-  try { const c = JSON.parse(localStorage.getItem(LS.stations) || 'null'); if (c && Date.now() - c.t < 30 * 86400000) return c.list; } catch {}
-  const ctrl = new AbortController(); const to = setTimeout(() => ctrl.abort(), 9000);
-  const j = await (await fetch(NOAA_STATIONS, { signal: ctrl.signal })).json();
-  clearTimeout(to);
+  const c = AppCore.readJson(LS.stations);
+  if (c && Date.now() - c.t < 30 * 86400000) return c.list;
+  const j = await AppCore.fetchJson(NOAA_STATIONS, { label: 'NOAA stations', timeoutMs: 9000 });
   const list = (j.stations || []).map(s => ({ id: s.id, name: s.name, state: s.state, lat: +s.lat, lon: +s.lng }))
     .filter(s => Number.isFinite(s.lat) && Number.isFinite(s.lon));
-  try { localStorage.setItem(LS.stations, JSON.stringify({ t: Date.now(), list })); } catch {}
+  AppCore.writeJson(LS.stations, { t: Date.now(), list });
   return list;
 }
 async function nearestStation(lat, lon){
@@ -191,7 +195,8 @@ async function nearestStation(lat, lon){
 async function fetchTides(stationId, start){
   const bd = `${start.getFullYear()}${pad(start.getMonth() + 1)}${pad(start.getDate())}`;
   const url = `https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=predictions&application=ebb&datum=MLLW&interval=h&units=english&time_zone=lst_ldt&format=json&station=${stationId}&begin_date=${bd}&range=168`;
-  const j = await (await fetch(url)).json();
+  const j = await AppCore.fetchJson(url, { label: 'NOAA tides', timeoutMs: 12000 });
+  if (j.error) throw new Error(j.error.message || 'NOAA tide error');
   const map = new Map();
   (j.predictions || []).forEach(p => map.set(p.t.replace(' ', 'T').slice(0, 13), +p.v));
   return map;
@@ -199,7 +204,8 @@ async function fetchTides(stationId, start){
 async function fetchTideMarks(stationId, start){
   const bd = `${start.getFullYear()}${pad(start.getMonth() + 1)}${pad(start.getDate())}`;
   const url = `https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=predictions&application=ebb&datum=MLLW&interval=hilo&units=english&time_zone=lst_ldt&format=json&station=${stationId}&begin_date=${bd}&range=168`;
-  const j = await (await fetch(url)).json();
+  const j = await AppCore.fetchJson(url, { label: 'NOAA tide marks', timeoutMs: 12000 });
+  if (j.error) throw new Error(j.error.message || 'NOAA tide mark error');
   const marks = [];
   (j.predictions || []).forEach(p => {
     const iso = p.t?.replace(' ', 'T');
@@ -279,6 +285,7 @@ function enrichTide(days){
   refineTideDirectionFromMarks(days);
 }
 function enrichSun(days, lat, lon, offset){
+  offset = offsetForCalc(offset);
   days.forEach(d => d.cells.forEach(c => {
     if (!c) return;
     const utc = new Date(Date.parse(c.iso + 'Z') - offset * 1000);
@@ -292,6 +299,7 @@ function moonPhaseAt(date){
   return ((daysSince / SYNODIC_MONTH) % 1 + 1) % 1;
 }
 function enrichMoon(days, offset){
+  offset = offsetForCalc(offset);
   days.forEach(d => {
     d.cells.forEach(c => { if (c) c.moon = null; });
     const noonUtc = new Date(Date.parse(`${ymd(d.date)}T12:00Z`) - offset * 1000);
@@ -304,61 +312,122 @@ function enrichMoon(days, offset){
 }
 
 /* ---------- Load orchestration ---------- */
-let days = [], orientation = 'p', loadSeq = 0, lastCoords = null, testMode = false;
+let days = [], orientation = 'p', loadSeq = 0, lastCoords = null, testMode = false, currentForecastMeta = null;
+let myCoords = null, myPlace = null;
+const fcCache = new Map();
+const fcKey = (lat, lon) => `${(+lat).toFixed(3)},${(+lon).toFixed(3)}`;
+function cacheForecast(lat, lon, json, t = Date.now()){
+  fcCache.set(fcKey(lat, lon), { json, t });
+  while (fcCache.size > 8) fcCache.delete(fcCache.keys().next().value);
+}
+function readCache(){ return AppCore.readJson(LS.cache); }
+function writeCache(lat, lon, json, t = Date.now()){ AppCore.writeJson(LS.cache, { lat, lon, t, json }); }
+function cacheMatches(cache, lat, lon){ return AppCore.cacheMatches(cache, lat, lon); }
+function previewDays(json, lat, lon){
+  const parsed = toDays(json);
+  const out = parsed.days;
+  enrichSun(out, lat, lon, parsed.offset);
+  enrichMoon(out, parsed.offset);
+  synthTides(out, lon);
+  synthTideMarks(out);
+  enrichTide(out);
+  return out;
+}
+function applyForecast(json, lat, lon, fetchedAt = Date.now(), source = 'fresh'){
+  const parsed = toDays(json);
+  currentForecastMeta = parsed.meta;
+  days = parsed.days;
+  enrichSun(days, lat, lon, parsed.offset);
+  enrichMoon(days, parsed.offset);
+  setUpdatedAt(fetchedAt, source);
+  return parsed;
+}
+function showLoadingScaffold(){
+  currentForecastMeta = null;
+  days = placeholderDays();
+  render();
+  gridEl.classList.add('loading');
+  setUpdatedAt(null, 'loading');
+  setTideSrc('Tide: loading');
+}
+function applySimulatedTides(lon, label = 'Tide: simulated'){
+  synthTides(days, lon);
+  synthTideMarks(days);
+  enrichTide(days);
+  setTideSrc(label);
+}
+async function loadTides(lat, lon, start, seq){
+  try {
+    const st = await nearestStation(lat, lon);
+    if (!st) throw new Error('no station');
+    const map = await fetchTides(st.id, start);
+    if (seq !== loadSeq) return false;
+    applyTideMap(days, map);
+    try {
+      const marks = await fetchTideMarks(st.id, start);
+      if (seq !== loadSeq) return false;
+      applyTideMarks(days, marks);
+    } catch {
+      synthTideMarks(days);
+    }
+    if (![...days].some(d => d.cells.some(c => c && c.tideFt != null))) throw new Error('empty');
+    if (![...days].some(d => d.cells.some(c => c && c.tideMark))) synthTideMarks(days);
+    setTideSrc(`Tide: ${st.name}`);
+  } catch {
+    if (seq !== loadSeq) return false;
+    applySimulatedTides(lon, 'Tide: simulated (NOAA unavailable)');
+  }
+  enrichTide(days);
+  render();
+  return true;
+}
 async function load(lat, lon){
   const seq = ++loadSeq;
   testMode = false;
   lastCoords = { lat, lon };
-  const start = new Date(); start.setHours(0, 0, 0, 0);
+  const cache = readCache();
+  const warm = fcCache.get(fcKey(lat, lon)) || (cacheMatches(cache, lat, lon) ? cache : null);
+  const hadCache = !!warm;
+  if (hadCache){
+    applyForecast(warm.json, lat, lon, warm.t, 'cached');
+    applySimulatedTides(lon, 'Tide: simulated until NOAA refreshes');
+    resetDelight();
+    render();
+  } else {
+    showLoadingScaffold();
+  }
   try {
-    const fc = await (await fetch(buildUrl(lat, lon))).json();
+    const fc = await AppCore.fetchJson(buildUrl(lat, lon), { label: 'Weather', timeoutMs: 15000 });
     if (seq !== loadSeq) return;
-    setUpdatedAt(Date.now());
-    const parsed = toDays(fc);
-    days = parsed.days;
-    enrichSun(days, lat, lon, parsed.offset);
-    enrichMoon(days, parsed.offset);
+    const fetchedAt = Date.now();
+    writeCache(lat, lon, fc, fetchedAt);
+    cacheForecast(lat, lon, fc, fetchedAt);
+    applyForecast(fc, lat, lon, fetchedAt);
+    const start = days[0]?.date || new Date();
     resetDelight();
     render();                                   // paint sky immediately; tides fill in next
-    // tides (async; may fail → synth)
-    try {
-      const st = await nearestStation(lat, lon);
-      if (!st) throw new Error('no station');
-      const map = await fetchTides(st.id, start);
-      if (seq !== loadSeq) return;
-      applyTideMap(days, map);
-      try {
-        const marks = await fetchTideMarks(st.id, start);
-        if (seq !== loadSeq) return;
-        applyTideMarks(days, marks);
-      } catch {
-        synthTideMarks(days);
-      }
-      if (![...days].some(d => d.cells.some(c => c && c.tideFt != null))) throw new Error('empty');
-      if (![...days].some(d => d.cells.some(c => c && c.tideMark))) synthTideMarks(days);
-      setTideSrc(`Tide: ${st.name}`);
-    } catch {
-      synthTides(days, lon);
-      synthTideMarks(days);
-      setTideSrc('Tide: simulated (no NOAA station)');
-    }
-    enrichTide(days);
-    render();
+    prefetchNeighbors();
+    await loadTides(lat, lon, start, seq);
   } catch {
-    setTideSrc('Forecast unavailable');
+    if (seq !== loadSeq) return;
+    if (hadCache){
+      setUpdatedAt(warm.t, 'stale');
+      setTideSrc('Tide: simulated (offline)');
+      render();
+    } else {
+      setTideSrc('Forecast unavailable');
+      setPlace('Couldn\'t load forecast', 'Search in settings');
+    }
+  } finally {
+    if (seq === loadSeq) gridEl.classList.remove('loading');
   }
 }
+let testForecastCache = null;
+function testForecast(){ return testForecastCache || (testForecastCache = genTestForecast()); }
 function loadTest(){
   testMode = true;
-  setUpdatedAt(Date.now());
-  const parsed = toDays(genTestForecast());
-  days = parsed.days;
-  enrichSun(days, 41.5, -71.3, parsed.offset);    // Narragansett-ish, just for sun timing
-  enrichMoon(days, parsed.offset);
-  synthTides(days, -71.3);
-  synthTideMarks(days);
-  enrichTide(days);
-  setTideSrc('Tide: simulated (test)');
+  applyForecast(testForecast(), 41.5, -71.3, Date.now());
+  applySimulatedTides(-71.3, 'Tide: simulated (test)');
   lastCoords = null;
   resetDelight();
   render();
@@ -417,6 +486,7 @@ function render(){
   days.forEach((d, di) => { frag.appendChild(dayHead(d)); for (let h = 0; h < 24; h++) frag.appendChild(cellEl(di, h)); });
   gridEl.replaceChildren(frag);
   layoutFx();
+  refreshTip();                                 // keep an open popup pinned to its cell with fresh data
 }
 
 const DAY_SCALE = 0.8, HOUR_SCALE = 1.1, CW = 0.62;
@@ -427,7 +497,8 @@ function fitHeaders(){
     gridEl.style.setProperty('--dayfs', Math.max(7, Math.round(px)) + 'px'); }
   const hr = gridEl.querySelector('.head.hour');
   if (hr){ const w = hr.clientWidth, hh = hr.clientHeight; const len = clock24() ? 2 : 3;
-    gridEl.style.setProperty('--hourfs', Math.max(7, Math.round(Math.min(hh * 0.86, w / (len * CW)) * HOUR_SCALE)) + 'px'); }
+    const lscale = orientation === 'l' ? 0.85 : 1;   // time-axis labels read ~15% smaller in landscape
+    gridEl.style.setProperty('--hourfs', Math.max(7, Math.round(Math.min(hh * 0.86, w / (len * CW)) * HOUR_SCALE * lscale)) + 'px'); }
 }
 
 /* ---------- Cutaway canvas: water + chop + precip + stars ---------- */
@@ -825,12 +896,14 @@ function drawSelectedDayTideLocators(ctx, di){
   }
 }
 function drawNowLine(){
-  const now = new Date(), hNow = now.getHours(), frac = now.getMinutes() / 60;
-  const fc = fx.cells.find(c => c.di === 0 && c.h === hNow); if (!fc) return;
+  const now = forecastNow();
+  const di = days.findIndex(d => d.isToday);
+  if (di < 0) return;
+  const fc = fx.cells.find(c => c.di === di && c.h === now.hour); if (!fc) return;
   const ctx = fx.ctx; ctx.save();
   ctx.strokeStyle = '#ff2b2b'; ctx.lineWidth = 2; ctx.shadowColor = 'rgba(255,43,43,.8)'; ctx.shadowBlur = 6;
   ctx.beginPath();
-  const x = fc.x + frac * fc.w; ctx.moveTo(x, fc.y); ctx.lineTo(x, fc.y + fc.hgt);
+  const x = fc.x + (now.minute / 60) * fc.w; ctx.moveTo(x, fc.y); ctx.lineTo(x, fc.y + fc.hgt);
   ctx.stroke(); ctx.restore();
 }
 function drawSelectedCell(){
@@ -1240,14 +1313,167 @@ function makeDraggablePopup(kind, el, afterDrag, beforeDrag, onTap){
   el.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); });
 }
 
-/* ---------- Grid gestures: tap → readout; horizontal swipe → cycle locations ---------- */
+/* ---------- Grid gestures: tap → readout; horizontal swipe → preview/cycle locations ---------- */
 const tipEl = $('#tip'); let tipTimer = 0, suppressTipGridClickUntil = 0, selectedCell = null;
-let gX = 0, gY = 0, swiped = false;
-gridEl.addEventListener('pointerdown', e => { swiped = false; gX = e.clientX; gY = e.clientY; });
-gridEl.addEventListener('pointerup', e => {
-  const dx = e.clientX - gX, dy = e.clientY - gY, ax = Math.abs(dx), ay = Math.abs(dy);
-  if (ax > 55 && ax > ay * 1.4){ swiped = true; cycleLocation(dx < 0 ? 1 : -1); }
+let gX = 0, gY = 0, swiped = false, dragAxis = null, dragOff = 0, dragSize = 0, slideCleanupT = 0, pendingFinish = null;
+let ghostPrev = null, ghostNext = null;
+const SWIPE_EASE = 'cubic-bezier(.22,.61,.36,1)';
+const fxEls = () => [fx.canvas].filter(Boolean);
+function fxVisible(on){ for (const el of fxEls()) el.style.opacity = on ? '' : '0'; }
+function cycleList(){
+  const list = [null];
+  settings.places.forEach((_, i) => list.push(i));
+  return list;
+}
+function cycleStep(dir){
+  const list = cycleList();
+  if (list.length <= 1) return undefined;
+  let i = list.indexOf(settings.activeIdx == null ? null : settings.activeIdx);
+  if (i < 0) i = 0;
+  return list[(i + dir + list.length) % list.length];
+}
+function coordsForIndex(idx){
+  if (idx === undefined) return null;
+  if (idx === null) return myCoords;
+  const p = settings.places[idx];
+  return p && !p.test && p.lat != null ? { lat: p.lat, lon: p.lon } : null;
+}
+function neighborPreview(dir){
+  const idx = cycleStep(dir);
+  if (idx === undefined) return null;
+  const p = idx == null ? null : settings.places[idx];
+  if (p?.test) return previewDays(testForecast(), 41.5, -71.3);
+  const c = coordsForIndex(idx);
+  const hit = c ? fcCache.get(fcKey(c.lat, c.lon)) : null;
+  return hit ? previewDays(hit.json, c.lat, c.lon) : null;
+}
+function prefetchNeighbors(){
+  const coords = [coordsForIndex(cycleStep(1)), coordsForIndex(cycleStep(-1))].filter(Boolean);
+  const seen = new Set();
+  for (const c of coords){
+    const k = fcKey(c.lat, c.lon);
+    if (seen.has(k) || fcCache.has(k)) continue;
+    seen.add(k);
+    AppCore.fetchJson(buildUrl(c.lat, c.lon), { label: 'Weather', timeoutMs: 15000 })
+      .then(json => cacheForecast(c.lat, c.lon, json))
+      .catch(() => {});
+  }
+  if (settings.places.some(p => p.test)) testForecast();
+}
+function canSwipe(){ return cycleList().length > 1; }
+function ghostCell(di, h, data){
+  const c = data[di]?.cells[h];
+  const el = document.createElement('div');
+  el.className = 'cell';
+  el.dataset.di = di; el.dataset.h = h;
+  if (!c){ el.classList.add('empty'); return el; }
+  const sky = skyStyle(c.elev, c.cloud);
+  el.style.background = sky.grad;
+  const water = document.createElement('div');
+  water.className = 'ghost-water';
+  water.style.height = `${clamp(c.waterFrac ?? 0.45, 0.05, 0.95) * 100}%`;
+  el.appendChild(water);
+  return el;
+}
+function buildGhost(data){
+  const el = document.createElement('div');
+  el.className = 'grid ghost';
+  const n = data.length;
+  el.style.gridTemplateColumns = `var(--label-day) repeat(24, minmax(0,1fr))`;
+  el.style.gridTemplateRows = `var(--label) repeat(${n}, minmax(0,1fr))`;
+  el.appendChild(corner());
+  for (let h = 0; h < 24; h++) el.appendChild(hourHead(h));
+  data.forEach((d, di) => {
+    el.appendChild(dayHead(d));
+    for (let h = 0; h < 24; h++) el.appendChild(ghostCell(di, h, data));
+  });
+  return el;
+}
+function mountGhost(data, rect, side){
+  const el = buildGhost(data || placeholderDays());
+  if (!data) el.classList.add('loading');
+  el.style.setProperty('--dayfs', gridEl.style.getPropertyValue('--dayfs'));
+  el.style.setProperty('--hourfs', gridEl.style.getPropertyValue('--hourfs'));
+  Object.assign(el.style, {
+    position: 'fixed', left: rect.left + 'px', top: rect.top + 'px',
+    width: rect.width + 'px', height: rect.height + 'px',
+    margin: '0', zIndex: '5', pointerEvents: 'none',
+    transform: `translate3d(${side * dragSize}px,0,0)`,
+  });
+  document.body.appendChild(el);
+  return el;
+}
+function buildCarousel(){
+  const rect = gridEl.getBoundingClientRect();
+  dragSize = rect.width;
+  ghostPrev = mountGhost(neighborPreview(-1), rect, -1);
+  ghostNext = mountGhost(neighborPreview(1), rect, 1);
+}
+function destroyGhosts(){ ghostPrev?.remove(); ghostNext?.remove(); ghostPrev = ghostNext = null; }
+function slideTransform(el, px, ms){
+  el.style.transition = ms ? `transform ${ms}ms ${SWIPE_EASE}` : 'none';
+  el.style.transform = `translate3d(${px}px,0,0)`;
+}
+function applyDrag(off, ms){
+  for (const el of [gridEl, ...fxEls()]) slideTransform(el, off, ms);
+  if (ghostPrev) slideTransform(ghostPrev, -dragSize + off, ms);
+  if (ghostNext) slideTransform(ghostNext, dragSize + off, ms);
+}
+function resetSlide(){
+  dragAxis = null;
+  for (const el of [gridEl, ...fxEls()]){ el.style.transition = ''; el.style.transform = ''; }
+  destroyGhosts(); fxVisible(true); pendingFinish = null;
+}
+function slideCommit(dir){
+  const IN = 220;
+  fxVisible(false);
+  applyDrag(dir < 0 ? -dragSize : dragSize, IN);
+  pendingFinish = () => {
+    pendingFinish = null;
+    cycleLocation(dir < 0 ? 1 : -1);
+    resetSlide();
+    layoutFx();
+  };
+  clearTimeout(slideCleanupT);
+  slideCleanupT = setTimeout(() => pendingFinish && pendingFinish(), IN + 10);
+}
+gridEl.addEventListener('pointerdown', e => {
+  clearTimeout(slideCleanupT);
+  if (pendingFinish) pendingFinish();
+  else if (ghostPrev || ghostNext) resetSlide();
+  swiped = false; dragAxis = null; dragOff = 0; gX = e.clientX; gY = e.clientY;
+  try { gridEl.setPointerCapture(e.pointerId); } catch {}
 });
+gridEl.addEventListener('pointermove', e => {
+  const dx = e.clientX - gX, dy = e.clientY - gY;
+  if (!dragAxis){
+    if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+    if (Math.abs(dx) < Math.abs(dy) * 1.25){ dragAxis = 'y'; swiped = true; return; }
+    dragAxis = 'x';
+    swiped = true;
+    hideTip();
+    dragSize = gridEl.clientWidth;
+    if (canSwipe()) buildCarousel();
+  }
+  if (dragAxis !== 'x') return;
+  let off = dx;
+  if (!canSwipe()) off *= 0.2;
+  dragOff = off;
+  applyDrag(off, 0);
+});
+function endGridDrag(e){
+  try { gridEl.releasePointerCapture(e.pointerId); } catch {}
+  if (dragAxis !== 'x') return;
+  const off = dragOff;
+  if (canSwipe() && Math.abs(off) > Math.min(90, dragSize * 0.22)) slideCommit(off < 0 ? -1 : 1);
+  else {
+    applyDrag(0, 220);
+    clearTimeout(slideCleanupT);
+    slideCleanupT = setTimeout(resetSlide, 240);
+  }
+}
+gridEl.addEventListener('pointerup', endGridDrag);
+gridEl.addEventListener('pointercancel', endGridDrag);
 gridEl.addEventListener('click', e => {
   if (performance.now() < suppressTipGridClickUntil) return;
   if (swiped){ swiped = false; return; }                       // a swipe is not a tap
@@ -1256,15 +1482,23 @@ gridEl.addEventListener('click', e => {
 });
 document.addEventListener('click', e => { if (!e.target.closest('.cell') && !e.target.closest('.tip')) hideTip(); }, true);
 function cycleLocation(dir){
-  const count = settings.places.length + 1;                    // saved places + "my location"
-  if (count <= 1) return;
-  const cur = settings.activeIdx == null ? 0 : settings.activeIdx + 1;
-  const next = (cur + dir + count) % count;
-  switchTo(next === 0 ? null : next - 1);
+  const next = cycleStep(dir);
+  if (next === undefined) return false;
+  switchTo(next);
+  return true;
 }
 function hideTip(){
   clearTimeout(tipTimer); tipEl.hidden = true; selectedCell = null;
   if (reduceMotion.matches) startFx();
+}
+// After a re-render (location change, tide fill-in), re-pin an open popup to the same
+// cell so it shows the current location's data — or hide it if that cell is gone.
+function refreshTip(){
+  if (tipEl.hidden || !selectedCell) return;
+  const { di, h } = selectedCell;
+  const el = gridEl.querySelector(`.cell[data-di="${di}"][data-h="${h}"]`);
+  if (el && !el.classList.contains('empty')) showTip(di, h, el);
+  else hideTip();
 }
 function dismissTipFromPopup(){
   suppressTipGridClickUntil = performance.now() + 450;
@@ -1351,7 +1585,11 @@ function switchTo(idx){
   const p = idx != null ? settings.places[idx] : null;
   if (p?.test) loadTest();
   else if (p){ setPlace(p.name, p.admin || ''); load(p.lat, p.lon); }
-  else { setPlace('Locating…', ''); locate(); }
+  else if (myCoords){
+    setPlace(myPlace?.name || 'Current location', myPlace?.sub || '');
+    load(myCoords.lat, myCoords.lon);
+    reverseName(myCoords.lat, myCoords.lon).then(p => { if (p) myPlace = p; });
+  } else { setPlace('Locating...', ''); locate(); }
 }
 function removePlace(i){
   const was = settings.activeIdx === i;
@@ -1424,21 +1662,28 @@ searchInput.addEventListener('keydown', e => {
 searchClear.addEventListener('click', () => { resetSearch(); searchInput.focus(); });
 searchInput.addEventListener('blur', () => setTimeout(closeResults, 120));
 
-function addTestPlace(){ let i = settings.places.findIndex(p => p.test); if (i < 0) i = settings.places.push({ name: '🎣 Test conditions', test: true }) - 1; switchTo(i); }
+function addTestPlace(){ testForecastCache = null; let i = settings.places.findIndex(p => p.test); if (i < 0) i = settings.places.push({ name: '🎣 Test conditions', test: true }) - 1; switchTo(i); }
 
 /* ---------- Geolocation ---------- */
 function locate(){
   if (!('geolocation' in navigator)){ setPlace('Location unavailable', 'Search in settings'); return; }
   navigator.geolocation.getCurrentPosition(
-    pos => { setPlace('Current location', ''); load(pos.coords.latitude, pos.coords.longitude); reverseName(pos.coords.latitude, pos.coords.longitude); },
+    pos => {
+      myCoords = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+      setPlace(myPlace?.name || 'Current location', myPlace?.sub || '');
+      load(myCoords.lat, myCoords.lon);
+      reverseName(myCoords.lat, myCoords.lon).then(p => { if (p) myPlace = p; });
+    },
     () => setPlace('Location blocked', 'Search in settings ⚙'),
     { enableHighAccuracy: false, timeout: 12000, maximumAge: 600000 }
   );
 }
 async function reverseName(lat, lon){
-  try { const j = await (await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=10`)).json();
+  try { const j = await AppCore.fetchJson(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=10`, { label: 'Reverse geocode', timeoutMs: 12000 });
     const a = j.address || {}; const name = a.city || a.town || a.village || a.hamlet || a.county || j.name;
-    if (name) setPlace(name, [a.state, (a.country_code || '').toUpperCase()].filter(Boolean).join(', ')); } catch {}
+    const sub = [a.state, (a.country_code || '').toUpperCase()].filter(Boolean).join(', ');
+    if (name){ const p = { name, sub }; setPlace(name, sub); return p; } } catch {}
+  return null;
 }
 
 /* ---------- Test forecast (varied sky/wind/precip) ---------- */
@@ -1479,16 +1724,37 @@ function genTestForecast(){
 let rT; addEventListener('resize', () => { clearTimeout(rT); rT = setTimeout(() => { (isPortrait() ? 'p' : 'l') !== orientation ? render() : layoutFx(); }, 120); });
 
 /* ---------- Service worker (offline / installable PWA) ---------- */
-if ('serviceWorker' in navigator) addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+AppCore.registerFreshServiceWorker('sw.js');
 
 /* ---------- Boot ---------- */
 function boot(){
-  days = placeholderDays(); render();             // instant, navigable UI (gear reachable) before data lands
   maybeShowCoach();
+  const cache = readCache();
+  if (cache?.json && cache.lat != null && cache.lon != null) cacheForecast(cache.lat, cache.lon, cache.json, cache.t || Date.now());
   const active = settings.activeIdx != null ? settings.places[settings.activeIdx] : null;
   if (active?.test) return loadTest();
-  if (active){ setPlace(active.name || 'Saved', active.admin || ''); return load(active.lat, active.lon); }
-  setPlace('Locating…', ''); locate();
+  if (active){
+    if (cacheMatches(cache, active.lat, active.lon)){
+      applyForecast(cache.json, active.lat, active.lon, cache.t, 'cached');
+      applySimulatedTides(active.lon, 'Tide: simulated until NOAA refreshes');
+      render();
+    } else {
+      showLoadingScaffold();
+    }
+    setPlace(active.name || 'Saved', active.admin || '');
+    return load(active.lat, active.lon);
+  }
+  if (cache?.json && cache.lat != null && cache.lon != null){
+    applyForecast(cache.json, cache.lat, cache.lon, cache.t, 'cached');
+    applySimulatedTides(cache.lon, 'Tide: simulated until location updates');
+    render();
+    setPlace('Last location', 'Updating current location...');
+    load(cache.lat, cache.lon);
+  } else {
+    showLoadingScaffold();
+    setPlace('Locating...', '');
+  }
+  locate();
 }
 
 boot();
