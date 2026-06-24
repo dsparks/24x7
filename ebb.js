@@ -4,6 +4,9 @@
  * Borrows the grid/layout/search scaffolding from its sibling 24×7. */
 const APP_NAME = 'Ebb';
 const $ = sel => document.querySelector(sel);
+const escapeHtml = value => String(value).replace(/[&<>"']/g, ch => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+}[ch]));
 const LS = { settings: 'ebb.settings', cache: 'ebb.cache', stations: 'ebb.stations', coach: 'ebb.coach' };
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -555,7 +558,10 @@ function layoutFx(){
     if (el.classList.contains('empty')) return;
     const c = days[+el.dataset.di]?.cells[+el.dataset.h]; if (!c) return;
     const r = el.getBoundingClientRect();
-    const fc = { di: +el.dataset.di, h: +el.dataset.h, cell: c, x: r.left - g.left, y: r.top - g.top, w: r.width, hgt: r.height };
+    const cs = getComputedStyle(el);
+    const bw = parseFloat(cs.borderRightWidth) || 0;
+    const bh = parseFloat(cs.borderBottomWidth) || 0;
+    const fc = { di: +el.dataset.di, h: +el.dataset.h, cell: c, x: r.left - g.left, y: r.top - g.top, w: Math.max(1, r.width - bw), hgt: Math.max(1, r.height - bh) };
     buildCellFx(fc); fx.cells.push(fc);
   });
   scheduleDelight();
@@ -626,7 +632,22 @@ function drawCell(fc, dt){
   drawWater(fc, waterTop);
   ctx.restore();
 }
-
+function drawWaterSeams(){
+  const ctx = fx.ctx;
+  ctx.save();
+  ctx.fillStyle = '#000';
+  const rows = [...new Set(fx.cells.map(c => c.di))].map(di => rowCells(di));
+  for (const row of rows){
+    for (let i = 0; i < row.length - 1; i++){
+      const a = row[i], b = row[i + 1];
+      const x = (a.x + a.w + b.x) / 2;
+      const y = Math.min(waterTopOf(a), waterTopOf(b)) - 1;
+      const bottom = Math.max(a.y + a.hgt, b.y + b.hgt);
+      ctx.fillRect(x - 1, y, 2, bottom - y);
+    }
+  }
+  ctx.restore();
+}
 /* ---------- Water-surface renderers ----------
  * Switch with CHOP_VERSION: 1 = gentle two-wave chop (the original "chop 1.0"),
  * 2 = directional wind-driven waves with whitecaps + spray that build with wind,
@@ -711,10 +732,12 @@ function drawWaterV1(fc, waterTop){
   const surf = x => waterTop + amp * Math.sin(k * x + t * spd) + amp * 0.4 * Math.sin(2.2 * k * x - t * spd * 1.4);
   ctx.beginPath(); ctx.moveTo(left, bottom);
   for (let x = 0; x <= w; x += 4) ctx.lineTo(left + x, surf(x));
+  ctx.lineTo(left + w, surf(w));
   ctx.lineTo(left + w, bottom); ctx.closePath();
   ctx.fillStyle = '#000'; ctx.fill();
   ctx.beginPath();
   for (let x = 0; x <= w; x += 4){ const y = surf(x); x === 0 ? ctx.moveTo(left, y) : ctx.lineTo(left + x, y); }
+  ctx.lineTo(left + w, surf(w));
   ctx.strokeStyle = `rgba(150,190,225,${(0.18 + clamp(wind / 40, 0, 0.22)).toFixed(3)})`;
   ctx.lineWidth = 1; ctx.stroke();
 }
@@ -735,28 +758,32 @@ function drawWaterV2(fc, waterTop){
   const sharp = 0.5 + wf * 0.45;                                    // crest pointiness
   // Precompute the surface once: sharpened trochoid (pointy crests, flat troughs)
   // plus a cross-wave. sin(kx − ωt) ⇒ crests travel toward +x (right) when roll>0.
-  const step = 3, ys = [];
+  const step = 3, pts = [];
   for (let x = 0; x <= w; x += step){
     const s = Math.sin(k * x - travel);
     const peaked = Math.sign(s) * Math.pow(Math.abs(s), 1 / (1 + sharp));
-    ys.push(waterTop + amp * (peaked * 0.82 + 0.3 * Math.sin(2.4 * k * x + bob)));
+    pts.push({ x, y: waterTop + amp * (peaked * 0.82 + 0.3 * Math.sin(2.4 * k * x + bob)) });
+  }
+  if (pts[pts.length - 1]?.x < w){
+    const s = Math.sin(k * w - travel);
+    const peaked = Math.sign(s) * Math.pow(Math.abs(s), 1 / (1 + sharp));
+    pts.push({ x: w, y: waterTop + amp * (peaked * 0.82 + 0.3 * Math.sin(2.4 * k * w + bob)) });
   }
   ctx.beginPath(); ctx.moveTo(left, bottom);
-  ys.forEach((y, i) => ctx.lineTo(left + i * step, y));
-  ctx.lineTo(left + (ys.length - 1) * step, bottom); ctx.closePath();
+  pts.forEach(p => ctx.lineTo(left + p.x, p.y));
+  ctx.lineTo(left + w, bottom); ctx.closePath();
   ctx.fillStyle = '#000'; ctx.fill();
   // crest line, brighter as wind builds
   ctx.beginPath();
-  ys.forEach((y, i) => i === 0 ? ctx.moveTo(left, y) : ctx.lineTo(left + i * step, y));
+  pts.forEach((p, i) => i === 0 ? ctx.moveTo(left, p.y) : ctx.lineTo(left + p.x, p.y));
   ctx.strokeStyle = `rgba(150,190,225,${(0.16 + wf * 0.22).toFixed(3)})`;
   ctx.lineWidth = 1; ctx.stroke();
   // whitecaps + downwind spray on the crests, scaling with wind (none when calm)
   if (wf > 0.2){
     const fa = clamp((wf - 0.2) * 1.4, 0, 1);
-    for (let i = 1; i < ys.length - 1; i++){
-      const y = ys[i];
-      if (y < ys[i - 1] && y <= ys[i + 1]){                         // local crest peak (smaller y = higher)
-        const x = i * step;
+    for (let i = 1; i < pts.length - 1; i++){
+      const { x, y } = pts[i];
+      if (y < pts[i - 1].y && y <= pts[i + 1].y){                    // local crest peak (smaller y = higher)
         const fw = 2 + wf * 3;
         ctx.fillStyle = `rgba(228,242,255,${(0.5 * fa).toFixed(3)})`;
         ctx.fillRect(roll > 0 ? left + x - 1 : left + x + 1 - fw, y - 0.6, fw, 1.4);   // foam streaks toward the blow
@@ -1229,6 +1256,7 @@ function frame(now){
   fx.last = now; fx.t = now / 1000;
   fx.ctx.clearRect(0, 0, fx.w, fx.h);
   for (const fc of fx.cells) drawCell(fc, dt);
+  drawWaterSeams();
   drawNowLine();
   drawSelectedCell();
   drawDelight();
@@ -1237,7 +1265,7 @@ function frame(now){
 function startFx(){
   cancelAnimationFrame(fx.raf); fx.raf = 0;
   if (!fx.cells.length){ fx.ctx?.clearRect(0, 0, fx.w, fx.h); return; }
-  if (reduceMotion.matches){ fx.ctx.clearRect(0, 0, fx.w, fx.h); fx.t = 0; for (const fc of fx.cells) drawCell(fc, 0); drawNowLine(); drawSelectedCell(); drawDelight(); return; }
+  if (reduceMotion.matches){ fx.ctx.clearRect(0, 0, fx.w, fx.h); fx.t = 0; for (const fc of fx.cells) drawCell(fc, 0); drawWaterSeams(); drawNowLine(); drawSelectedCell(); drawDelight(); return; }
   fx.last = performance.now(); fx.raf = requestAnimationFrame(frame);
 }
 document.addEventListener('visibilitychange', () => { if (document.hidden){ cancelAnimationFrame(fx.raf); fx.raf = 0; } else startFx(); });
@@ -1443,17 +1471,17 @@ gridEl.addEventListener('pointerdown', e => {
   else if (ghostPrev || ghostNext) resetSlide();
   swiped = false; dragAxis = null; dragOff = 0; gX = e.clientX; gY = e.clientY;
   try { gridEl.setPointerCapture(e.pointerId); } catch {}
+  dragSize = gridEl.clientWidth;
+  if (canSwipe()) buildCarousel();
 });
 gridEl.addEventListener('pointermove', e => {
   const dx = e.clientX - gX, dy = e.clientY - gY;
   if (!dragAxis){
     if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
-    if (Math.abs(dx) < Math.abs(dy) * 1.25){ dragAxis = 'y'; swiped = true; return; }
+    if (Math.abs(dx) < Math.abs(dy) * 1.25){ dragAxis = 'y'; swiped = true; destroyGhosts(); return; }
     dragAxis = 'x';
     swiped = true;
     hideTip();
-    dragSize = gridEl.clientWidth;
-    if (canSwipe()) buildCarousel();
   }
   if (dragAxis !== 'x') return;
   let off = dx;
@@ -1463,6 +1491,7 @@ gridEl.addEventListener('pointermove', e => {
 });
 function endGridDrag(e){
   try { gridEl.releasePointerCapture(e.pointerId); } catch {}
+  if (!dragAxis){ destroyGhosts(); return; }
   if (dragAxis !== 'x') return;
   const off = dragOff;
   if (canSwipe() && Math.abs(off) > Math.min(90, dragSize * 0.22)) slideCommit(off < 0 ? -1 : 1);
@@ -1508,19 +1537,30 @@ function showTip(di, h, el){
   const c = days[di]?.cells[h]; if (!c) return;
   selectedCell = { di, h };
   const d = days[di];
-  const bits = [`<b>${d.dow} ${fmtHourLong(h)}</b>`];
+  const location = place.name && place.name !== '—' ? place.name : 'Current location';
+  const head = `
+    <span class="tip-place">${escapeHtml(location)}</span>
+    <span class="tip-time">${d.dow} ${fmtHourLong(h)}</span>`;
+  let tide = '<span class="tip-primary"><span class="tip-primary-label">Tide</span><strong>Unavailable</strong></span>';
   if (c.tideFt != null){
-    const arrow = c.rising == null ? '' : (c.rising ? `<span class="tide-rise">▲ rising</span>` : `<span class="tide-fall">▼ falling</span>`);
-    bits.push(`· tide ${c.tideFt.toFixed(1)} ft ${arrow}`);
+    const trend = c.rising == null ? '' : (c.rising
+      ? `<span class="tide-rise">▲ Rising</span>`
+      : `<span class="tide-fall">▼ Falling</span>`);
+    tide = `<span class="tip-primary"><span class="tip-primary-label">Tide</span><strong>${c.tideFt.toFixed(1)} ft</strong>${trend}</span>`;
   }
-  if (c.tideMark) bits.push(`· ${c.tideMark.type === 'H' ? 'high' : 'low'} tide ${fmtClockMinute(h, c.tideMark.minute || 0)}`);
-  bits.push(`· wind ${Math.round(c.windMph)}${c.windDir != null ? ' ' + compass8(c.windDir) : ''} mph`);
-  if ((c.pop || 0) > 10 && isThunder(c)) bits.push(`· ${c.pop | 0}% thunderstorm`);
-  else if ((c.pop || 0) > 10 && ((c.precipMm || 0) > 0 || (c.snowCm || 0) > 0)) bits.push(`· ${c.pop | 0}% ${c.snowCm > 0 ? 'snow' : 'rain'}`);
-  bits.push(`· ${c.cloud | 0}% cloud`);
-  if (c.tF != null) bits.push(`· ${Math.round(c.tF)}°`);
-  const head = place.name && place.name !== '—' ? `<span class="tip-place">${place.name}</span>` : '';
-  tipEl.innerHTML = head + bits.join(' ');
+  const mark = c.tideMark
+    ? `<span class="tip-event">${c.tideMark.type === 'H' ? 'High' : 'Low'} tide · ${fmtClockMinute(h, c.tideMark.minute || 0)}</span>`
+    : '';
+  const facts = [
+    `Wind ${Math.round(c.windMph)}${c.windDir != null ? ' ' + compass8(c.windDir) : ''} mph`,
+  ];
+  if ((c.pop || 0) > 10 && isThunder(c)) facts.push(`${c.pop | 0}% thunderstorm`);
+  else if ((c.pop || 0) > 10 && ((c.precipMm || 0) > 0 || (c.snowCm || 0) > 0)) facts.push(`${c.pop | 0}% ${c.snowCm > 0 ? 'snow' : 'rain'}`);
+  else facts.push('Dry');
+  facts.push(`${c.cloud | 0}% cloud`);
+  if (c.tF != null) facts.push(`${Math.round(c.tF)}°`);
+  tipEl.innerHTML = head + tide + mark
+    + `<span class="tip-facts">${facts.map(v => `<span>${v}</span>`).join('')}</span>`;
   tipEl.classList.remove('top');
   const cellH = gridEl.querySelector('.cell:not(.empty)')?.getBoundingClientRect().height || 0;
   tipEl.style.setProperty('--tip-shift', Math.round(cellH) + 'px');

@@ -247,6 +247,9 @@ let orientation = null;
 
 /* ---------- DOM ---------- */
 const $ = sel => document.querySelector(sel);
+const escapeHtml = value => String(value).replace(/[&<>"']/g, ch => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+}[ch]));
 const gridEl = $('#grid');
 const tipEl = $('#tip');
 const sheetEl = $('#settings');
@@ -1152,6 +1155,8 @@ function cycleLocation(dir){
 let lpTimer = 0, lpFired = false, swiped = false, lpX = 0, lpY = 0;
 let dragAxis = null, dragOff = 0, dragSize = 0, slideCleanupT = 0, pendingFinish = null;
 let ghostPrev = null, ghostNext = null;
+const SWIPE_PREP_PX = 5;
+const SWIPE_START_PX = 10;
 const SWIPE_EASE = 'cubic-bezier(.22,.61,.36,1)';
 const fxEls = () => [fx.canvas, fx.wcanvas].filter(Boolean);
 function fxVisible(on){ for (const el of fxEls()) el.style.opacity = on ? '' : '0'; }
@@ -1278,12 +1283,17 @@ gridEl.addEventListener('pointerdown', e => {
 gridEl.addEventListener('pointermove', e => {
   const dx = e.clientX - lpX, dy = e.clientY - lpY;
   if (!dragAxis){
-    if (lpFired || (Math.abs(dx) < 10 && Math.abs(dy) < 10)) return;
+    if (lpFired) return;
+    if (Math.abs(dx) < SWIPE_PREP_PX && Math.abs(dy) < SWIPE_PREP_PX) return;
     clearTimeout(lpTimer);
     dragAxis = Math.abs(dx) >= Math.abs(dy) ? 'x' : 'y';
-    swiped = true;                           // suppress the tap-to-readout click
     dragSize = dragAxis === 'x' ? gridEl.clientWidth : gridEl.clientHeight;
     if (canSwipe(dragAxis)) buildCarousel(dragAxis);
+  }
+  if (!swiped){
+    const primary = Math.abs(dragAxis === 'x' ? dx : dy);
+    if (primary < SWIPE_START_PX) return;
+    swiped = true;                           // suppress the tap-to-readout click
   }
   let off = dragAxis === 'x' ? dx : dy;
   if (!canSwipe(dragAxis)) off *= 0.2;       // nowhere to go → rubber-band
@@ -1294,6 +1304,7 @@ function endDrag(e){
   clearTimeout(lpTimer);
   try { gridEl.releasePointerCapture(e.pointerId); } catch {}
   if (!dragAxis) return;
+  if (!swiped){ resetSlide(); return; }
   const axis = dragAxis, off = dragOff;
   if (canSwipe(axis) && Math.abs(off) > Math.min(90, dragSize * 0.22)){
     slideCommit(axis, off < 0 ? -1 : 1);
@@ -1309,28 +1320,35 @@ function showTip(di, h, el){
   const cell = days[di]?.cells[h];
   if (!cell) return;
   if (selEl) selEl.classList.remove('sel');
+  const c = cellRGB(cell);
   selEl = el; selDi = di; selH = h; el.classList.add('sel');
 
-  const color = rgbStr(cellRGB(cell));
+  const color = rgbStr(c);
   const tF = Math.round(displayTemp(cell.c));
   const day = days[di];
-  const bits = [
-    `<span class="swatch" style="background:${color}"></span>`,
-    `<b>${day.dow} ${fmtHourLong(h)}</b> · ${tF}${unitGlyph()}`,
-  ];
-  if (settings.view === 'run') bits.push(`· Run ${runIndex(cell)}`);
   const kind = precipKind(cell);
-  bits.push(kind ? `· ${cell.pop|0}% · ${kind.label}` : '· dry');
-  if (cell.windMph != null) bits.push(`· wind ${Math.round(cell.windMph)} mph`);
-  const head = place.name && place.name !== '—' ? `<span class="tip-place">${place.name}</span>` : '';
+  const precip = kind ? `${cell.pop | 0}% ${kind.label}` : 'Dry';
+  const wind = cell.windMph == null ? '' : `Wind ${Math.round(cell.windMph)} mph`;
+  const location = place.name && place.name !== '—' ? place.name : 'Current location';
+  const head = `
+    <span class="tip-place">${escapeHtml(location)}</span>
+    <span class="tip-time">${day.dow} ${fmtHourLong(h)}</span>`;
+  const facts = [precip, wind].filter(Boolean)
+    .map(v => `<span>${v}</span>`)
+    .join('');
+  const primary = settings.view === 'run'
+    ? `<span class="tip-primary"><span class="tip-primary-label">Run Index</span><strong>${runIndex(cell)}</strong><span class="swatch" style="background:${color}"></span></span>
+       <span class="tip-facts"><span>${tF}${unitGlyph()}</span>${facts}</span>`
+    : `<span class="tip-primary"><span class="swatch" style="background:${color}"></span><strong>${tF}${unitGlyph()}</strong></span>
+       <span class="tip-facts">${facts}</span>`;
   let why = '';
   if (settings.view === 'run' && testActive){
     const rows = runBreakdown(cell)
-      .map(r => `${r.label}: ${r.val} <b>${r.s == null ? '—' : r.s.toFixed(2)}</b>`)
-      .join('<br>');
-    why = `<span class="tip-why">${rows}<br>geomean → <b>${runIndex(cell)}</b></span>`;
+      .map(r => `<span><span>${r.label}</span><span>${r.val}</span><b>${r.s == null ? '—' : r.s.toFixed(2)}</b></span>`)
+      .join('');
+    why = `<span class="tip-why">${rows}<span class="tip-calc-total"><span>Geometric mean</span><b>${runIndex(cell)}</b></span></span>`;
   }
-  tipEl.innerHTML = head + bits.join(' ') + why;
+  tipEl.innerHTML = head + primary + why;
   tipEl.classList.toggle('top', orientation === 'p');   // portrait: sit over the wee hours
   const cellH = gridEl.querySelector('.cell:not(.empty)')?.getBoundingClientRect().height || 0;
   tipEl.style.setProperty('--tip-shift', Math.round(cellH) + 'px');   // nudge up one rectangle
