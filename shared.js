@@ -127,14 +127,51 @@
     ctx.restore();
   }
 
+  function localizeStylesheets(){
+    for (const link of document.querySelectorAll('link[rel="stylesheet"]')){
+      if (link.dataset.localStylesheet === '1') continue;
+      try {
+        const base = link.href;
+        const css = [...link.sheet.cssRules].map(rule => rule.cssText).join('\n')
+          .replace(/url\((['"]?)(?!data:|blob:|https?:|\/|#)([^'")]+)\1\)/gi,
+            (_, quote, path) => `url("${new URL(path, base).href}")`);
+        const style = document.createElement('style');
+        style.dataset.localStylesheet = '1';
+        style.textContent = css;
+        link.before(style);
+        link.dataset.localStylesheet = '1';
+        link.disabled = true;
+      } catch {
+        // Leave cross-origin stylesheets alone; their cssRules are not readable.
+      }
+    }
+  }
+
+  function gridReadyForSnapshot(grid){
+    if (!grid || grid.classList.contains('loading')) return false;
+    const cells = grid.querySelectorAll('.cell');
+    if (cells.length !== 168) return false;
+    const rect = grid.getBoundingClientRect();
+    if (!rect.width || !rect.height) return false;
+    const hour = grid.querySelector('.head.hour');
+    if (!hour) return false;
+    const style = getComputedStyle(hour);
+    return style.display !== 'inline' && parseFloat(style.fontSize) >= 7;
+  }
+
   async function captureGridSnapshot(grid, overlays, label){
-    if (!grid || !grid.children.length) throw new Error('The grid is not ready yet');
+    if (!gridReadyForSnapshot(grid)) throw new Error('The grid is not ready yet');
     if (!window.html2canvas) throw new Error('Screenshot renderer unavailable');
     await document.fonts?.ready;
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    if (!gridReadyForSnapshot(grid)) throw new Error('The grid changed while preparing the screenshot');
     const rect = grid.getBoundingClientRect();
     const width = Math.max(1, Math.round(rect.width));
     const height = Math.max(1, Math.round(rect.height));
-    const scale = Math.min(2, devicePixelRatio || 1);
+    // CSS-pixel resolution is ample for a dense grid and is dramatically faster
+    // than re-rendering the whole screen at a phone's 2x/3x device pixel ratio.
+    const scale = 1;
+    localizeStylesheets();
     const canvas = await window.html2canvas(grid, {
       backgroundColor: getComputedStyle(grid).backgroundColor || '#000',
       scale,
@@ -184,7 +221,7 @@
       await navigator.share(data);
       return 'shared';
     }
-    const objectUrl = URL.createObjectURL(blob);
+    const objectUrl = URL.createObjectURL(file);
     try {
       const link = document.createElement('a');
       link.href = objectUrl;

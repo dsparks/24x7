@@ -650,7 +650,7 @@ function render(){
   placeNowLine();                         // now that cells are in the DOM
   layoutFx();                             // build precip in the same pass (getBoundingClientRect forces layout)
   refreshTip();                           // re-pin an open detail popup to the same cell with fresh data
-  if (!sheetEl.hidden) prepareShare();
+  if (currentForecastMeta && !BOT_RENDER) invalidateShare();
 }
 
 function botForecastSummary(){
@@ -1413,12 +1413,33 @@ makeDraggablePopup('tip', tipEl, () => {
 }, () => clearTimeout(tipTimer), null, dismissTipFromPopup);
 
 /* ---------- Settings sheet ---------- */
-let shareFile = null, shareSeq = 0;
-async function prepareShare(){
+let shareFile = null, shareRevision = 0, shareBuiltRevision = -1;
+let sharePreparing = false, shareTimer = 0;
+function setShareButtonReady(ready){
   const button = $('#shareView');
-  const seq = ++shareSeq;
+  button.disabled = !ready;
+}
+function invalidateShare(delay = 150){
+  shareRevision++;
   shareFile = null;
-  button.disabled = true;
+  shareBuiltRevision = -1;
+  setShareButtonReady(false);
+  clearTimeout(shareTimer);
+  if (gridEl.classList.contains('loading')) return;
+  shareTimer = setTimeout(() => {
+    const start = () => prepareShare();
+    if ('requestIdleCallback' in window) requestIdleCallback(start, { timeout: 500 });
+    else start();
+  }, delay);
+}
+async function prepareShare(){
+  if (shareFile && shareBuiltRevision === shareRevision){
+    setShareButtonReady(true);
+    return;
+  }
+  if (sharePreparing) return;
+  const revision = shareRevision;
+  sharePreparing = true;
   try {
     const file = await AppCore.createGridSnapshotFile({
       grid: gridEl,
@@ -1427,15 +1448,24 @@ async function prepareShare(){
       placeName: place.name,
       filenamePrefix: '24x7',
     });
-    if (seq !== shareSeq) return;
+    if (revision !== shareRevision) return;
     shareFile = file;
-    button.disabled = false;
+    shareBuiltRevision = revision;
+    setShareButtonReady(true);
   } catch (err) {
-    if (seq !== shareSeq) return;
+    if (revision !== shareRevision) return;
     console.warn(err);
+  } finally {
+    sharePreparing = false;
+    if (revision !== shareRevision || (!shareFile && !gridEl.classList.contains('loading'))) invalidateShare(100);
   }
 }
-function openSheet(){ syncSheet(); sheetEl.hidden = false; prepareShare(); }
+function openSheet(){
+  syncSheet();
+  sheetEl.hidden = false;
+  if (shareFile && shareBuiltRevision === shareRevision) setShareButtonReady(true);
+  else { setShareButtonReady(false); prepareShare(); }
+}
 function closeSheet(){ sheetEl.hidden = true; }
 sheetEl.addEventListener('click', e => { if (e.target.dataset.close !== undefined) closeSheet(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeSheet(); hideTip(); } });
@@ -1569,6 +1599,7 @@ function recolorRun(){       // live recolor without rebuilding the grid DOM
     const t = el.querySelector('.t');
     if (t){ t.style.color = effInk(+el.dataset.di, +el.dataset.h, c); t.textContent = cellNumber(cell) ?? ''; }
   });
+  invalidateShare();
 }
 
 const runEditorEl = $('#runEditor');
@@ -1698,8 +1729,9 @@ function setPlace(name, sub){
     const botPlace = $('#botPlace');
     if (botPlace) botPlace.textContent = name || BOT_LABEL || 'Weather';
   }
-  if (!sheetEl.hidden){ syncSheet(); prepareShare(); }
+  if (!sheetEl.hidden) syncSheet();
   if (!legendEl.hidden) legendEl.querySelector('.legend-place').textContent = legendPlace();
+  if (currentForecastMeta) invalidateShare();
 }
 
 async function geocode(q, signal){
@@ -2077,7 +2109,10 @@ async function load(lat, lon){
     if (BOT_RENDER) window.__24x7Bot = { status: 'error', message: err?.message || 'Forecast unavailable' };
     console.warn(err);
   } finally {
-    if (seq === loadSeq) gridEl.classList.remove('loading');
+    if (seq === loadSeq){
+      gridEl.classList.remove('loading');
+      invalidateShare(100);
+    }
   }
 }
 

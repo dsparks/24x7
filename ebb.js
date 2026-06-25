@@ -125,7 +125,7 @@ function setPlace(name, sub){
   place = { name, sub: sub || '' };
   $('#placeName').textContent = name;
   $('#placeSub').textContent = sub || '';
-  if (!sheetEl.hidden) prepareShare();
+  if (currentForecastMeta) invalidateShare();
 }
 let tideSource = '—';
 function setTideSrc(t){ tideSource = t; const el = $('#tideSrc'); if (el) el.textContent = t; }
@@ -427,7 +427,10 @@ async function load(lat, lon){
       setPlace('Couldn\'t load forecast', 'Search in settings');
     }
   } finally {
-    if (seq === loadSeq) gridEl.classList.remove('loading');
+    if (seq === loadSeq){
+      gridEl.classList.remove('loading');
+      invalidateShare(100);
+    }
   }
 }
 let testForecastCache = null;
@@ -495,7 +498,7 @@ function render(){
   gridEl.replaceChildren(frag);
   layoutFx();
   refreshTip();                                 // keep an open popup pinned to its cell with fresh data
-  if (!sheetEl.hidden) prepareShare();
+  if (currentForecastMeta) invalidateShare();
 }
 
 const DAY_SCALE = 0.8, HOUR_SCALE = 1.1, CW = 0.62;
@@ -1580,12 +1583,33 @@ makeDraggablePopup('tip', tipEl, () => { clearTimeout(tipTimer); if (!tipEl.hidd
 
 /* ---------- Settings sheet ---------- */
 const sheetEl = $('#settings');
-let shareFile = null, shareSeq = 0;
-async function prepareShare(){
+let shareFile = null, shareRevision = 0, shareBuiltRevision = -1;
+let sharePreparing = false, shareTimer = 0;
+function setShareButtonReady(ready){
   const button = $('#shareView');
-  const seq = ++shareSeq;
+  button.disabled = !ready;
+}
+function invalidateShare(delay = 150){
+  shareRevision++;
   shareFile = null;
-  button.disabled = true;
+  shareBuiltRevision = -1;
+  setShareButtonReady(false);
+  clearTimeout(shareTimer);
+  if (gridEl.classList.contains('loading')) return;
+  shareTimer = setTimeout(() => {
+    const start = () => prepareShare();
+    if ('requestIdleCallback' in window) requestIdleCallback(start, { timeout: 500 });
+    else start();
+  }, delay);
+}
+async function prepareShare(){
+  if (shareFile && shareBuiltRevision === shareRevision){
+    setShareButtonReady(true);
+    return;
+  }
+  if (sharePreparing) return;
+  const revision = shareRevision;
+  sharePreparing = true;
   try {
     const file = await AppCore.createGridSnapshotFile({
       grid: gridEl,
@@ -1594,15 +1618,24 @@ async function prepareShare(){
       placeName: place.name,
       filenamePrefix: 'ebb',
     });
-    if (seq !== shareSeq) return;
+    if (revision !== shareRevision) return;
     shareFile = file;
-    button.disabled = false;
+    shareBuiltRevision = revision;
+    setShareButtonReady(true);
   } catch (err) {
-    if (seq !== shareSeq) return;
+    if (revision !== shareRevision) return;
     console.warn(err);
+  } finally {
+    sharePreparing = false;
+    if (revision !== shareRevision || (!shareFile && !gridEl.classList.contains('loading'))) invalidateShare(100);
   }
 }
-function openSheet(){ syncSheet(); sheetEl.hidden = false; prepareShare(); }
+function openSheet(){
+  syncSheet();
+  sheetEl.hidden = false;
+  if (shareFile && shareBuiltRevision === shareRevision) setShareButtonReady(true);
+  else { setShareButtonReady(false); prepareShare(); }
+}
 function closeSheet(){ sheetEl.hidden = true; }
 sheetEl.addEventListener('click', e => { if (e.target.dataset.close !== undefined) closeSheet(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !sheetEl.hidden) closeSheet(); });
