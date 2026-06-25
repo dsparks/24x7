@@ -4,6 +4,13 @@
  */
 
 const APP_NAME = '24×7';          // ← alt names: 'hotmap', 'wgrid'. One-line swap.
+const PAGE_PARAMS = new URLSearchParams(location.search);
+const BOT_RENDER = PAGE_PARAMS.get('bot') === '1';
+const BOT_LABEL = (PAGE_PARAMS.get('label') || '').trim();
+if (BOT_RENDER){
+  document.body.classList.add('bot-render');
+  window.__24x7Bot = { status: 'loading' };
+}
 const LS = {
   settings: 'grid.settings',
   cache:    'grid.cache',         // last forecast payload, for instant paint
@@ -643,6 +650,26 @@ function render(){
   placeNowLine();                         // now that cells are in the DOM
   layoutFx();                             // build precip in the same pass (getBoundingClientRect forces layout)
   refreshTip();                           // re-pin an open detail popup to the same cell with fresh data
+  if (!sheetEl.hidden) prepareShare();
+}
+
+function botForecastSummary(){
+  return days.map(day => {
+    const temps = day.cells.map(c => c?.c).filter(Number.isFinite).map(cToF);
+    return temps.length ? `${day.dow} ${Math.round(Math.min(...temps))}-${Math.round(Math.max(...temps))}F` : null;
+  }).filter(Boolean).join(', ');
+}
+
+function markBotReady(){
+  if (!BOT_RENDER) return;
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    window.__24x7Bot = {
+      status: 'ready',
+      place: place.name || BOT_LABEL || 'Weather',
+      summary: botForecastSummary(),
+    };
+    document.body.dataset.botReady = '1';
+  }));
 }
 
 /* ---------- Precipitation particle engine (canvas) ----------
@@ -1386,10 +1413,55 @@ makeDraggablePopup('tip', tipEl, () => {
 }, () => clearTimeout(tipTimer), null, dismissTipFromPopup);
 
 /* ---------- Settings sheet ---------- */
-function openSheet(){ syncSheet(); sheetEl.hidden = false; }
+let shareFile = null, shareSeq = 0;
+async function prepareShare(){
+  const button = $('#shareView');
+  const seq = ++shareSeq;
+  shareFile = null;
+  button.disabled = true;
+  try {
+    const file = await AppCore.createGridSnapshotFile({
+      grid: gridEl,
+      overlays: [fx.wcanvas, fx.canvas],
+      appName: APP_NAME,
+      placeName: place.name,
+      filenamePrefix: '24x7',
+    });
+    if (seq !== shareSeq) return;
+    shareFile = file;
+    button.disabled = false;
+  } catch (err) {
+    if (seq !== shareSeq) return;
+    console.warn(err);
+  }
+}
+function openSheet(){ syncSheet(); sheetEl.hidden = false; prepareShare(); }
 function closeSheet(){ sheetEl.hidden = true; }
 sheetEl.addEventListener('click', e => { if (e.target.dataset.close !== undefined) closeSheet(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeSheet(); hideTip(); } });
+
+$('#shareView').addEventListener('click', async () => {
+  const button = $('#shareView');
+  if (!shareFile) return;
+  button.disabled = true;
+  closeSheet();
+  hideTip();
+  legendEl.hidden = true;
+  try {
+    await AppCore.shareSnapshotFile(shareFile, {
+      appName: APP_NAME,
+      placeName: place.name,
+      url: 'https://dsparks.github.io/24x7/',
+    });
+  } catch (err) {
+    if (err?.name !== 'AbortError'){
+      console.warn(err);
+      AppCore.showToast('Couldn’t create the screenshot');
+    }
+  } finally {
+    button.disabled = false;
+  }
+});
 
 function syncSheet(){
   $('#appName').textContent = APP_NAME;
@@ -1531,6 +1603,7 @@ $('#coachMore').addEventListener('click', () => { closeCoach(); aboutEl.hidden =
 coachEl.addEventListener('click', e => { if (e.target.dataset.coachclose !== undefined) closeCoach(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !coachEl.hidden) closeCoach(); });
 (function maybeShowCoach(){
+  if (BOT_RENDER) return;
   let seen = false; try { seen = localStorage.getItem(LS.coach) === '1'; } catch {}
   if (!seen) coachEl.hidden = false;                  // appears over the first (placeholder) paint
 })();
@@ -1621,7 +1694,11 @@ enableSheetSwipe(aboutEl.querySelector('.sheet-card'), () => { aboutEl.hidden = 
 /* ---------- Location: geolocation + Open-Meteo geocoding ---------- */
 function setPlace(name, sub){
   place = { name, sub: sub || '' };
-  if (!sheetEl.hidden) syncSheet();
+  if (BOT_RENDER){
+    const botPlace = $('#botPlace');
+    if (botPlace) botPlace.textContent = name || BOT_LABEL || 'Weather';
+  }
+  if (!sheetEl.hidden){ syncSheet(); prepareShare(); }
   if (!legendEl.hidden) legendEl.querySelector('.legend-place').textContent = legendPlace();
 }
 
@@ -1963,6 +2040,7 @@ function applyForecast(json, fetchedAt = Date.now(), source = 'fresh'){
   days = toDays(json);
   render();
   $('#updatedAt').textContent = formatDataTimestamp(fetchedAt, source);
+  if (source === 'fresh') markBotReady();
 }
 
 let loadSeq = 0, lastCoords = null, lastLoadedAt = 0;
@@ -1996,6 +2074,7 @@ async function load(lat, lon){
       setPlace('Couldn’t load forecast', 'Tap ⚙ to retry');
       $('#updatedAt').textContent = 'Forecast unavailable';
     }
+    if (BOT_RENDER) window.__24x7Bot = { status: 'error', message: err?.message || 'Forecast unavailable' };
     console.warn(err);
   } finally {
     if (seq === loadSeq) gridEl.classList.remove('loading');
@@ -2068,12 +2147,12 @@ function boot(){
   if (cache?.json && cache.lat != null && cache.lon != null) cacheForecast(cache.lat, cache.lon, cache.json, cache.t || Date.now());
 
   // 2) URL deep-link wins: ?lat=&lon= or ?q=city (handy for sharing & headless testing).
-  const params = new URLSearchParams(location.search);
-  const qlat = parseFloat(params.get('lat')), qlon = parseFloat(params.get('lon')), qq = params.get('q');
+  const qlat = parseFloat(PAGE_PARAMS.get('lat')), qlon = parseFloat(PAGE_PARAMS.get('lon')), qq = PAGE_PARAMS.get('q');
   if (Number.isFinite(qlat) && Number.isFinite(qlon)){
     if (cacheMatches(cache, qlat, qlon)) applyForecast(cache.json, cache.t, 'cached'); else showLoadingScaffold();
-    setPlace('Pinned location', `${qlat.toFixed(2)}, ${qlon.toFixed(2)}`);
-    load(qlat, qlon); reverseName(qlat, qlon);
+    setPlace(BOT_LABEL || 'Pinned location', `${qlat.toFixed(2)}, ${qlon.toFixed(2)}`);
+    load(qlat, qlon);
+    if (!BOT_LABEL) reverseName(qlat, qlon);
     return;
   }
   if (qq){
@@ -2143,6 +2222,6 @@ function refreshMyCoords(){
 setInterval(refreshMyCoords, 5 * 60 * 1000);
 
 // Register service worker for offline / installable PWA (no-op on file://).
-AppCore.registerFreshServiceWorker('sw.js');
+if (!BOT_RENDER) AppCore.registerFreshServiceWorker('sw.js');
 
 boot();

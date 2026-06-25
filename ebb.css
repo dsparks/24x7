@@ -136,8 +136,19 @@ body{
 .sheet-head h1{font-size:1.3rem;margin:0;letter-spacing:.5px}
 .x{background:transparent;border:0;color:var(--muted);font-size:1.1rem;cursor:pointer;padding:.3rem}
 .sheet-body{display:flex;flex-direction:column;gap:1.05rem}
+.place-row{display:flex;align-items:center;justify-content:space-between;gap:.6rem}
+.place-row>div{min-width:0}
 .place{font-weight:700;font-size:1.05rem}
 .place-sub{color:var(--muted);font-size:.85rem;margin-top:1px}
+.share-view{flex:0 0 auto;color:#7fb0ff}
+.share-view:disabled{color:var(--muted);opacity:.45;cursor:default}
+.share-toast{
+  position:fixed;z-index:80;left:50%;bottom:max(18px,env(safe-area-inset-bottom));
+  transform:translateX(-50%);
+  max-width:calc(100vw - 28px);padding:9px 13px;border:1px solid var(--line);border-radius:8px;
+  background:rgba(6,10,16,.96);color:var(--ink);box-shadow:0 8px 28px rgba(0,0,0,.5);
+  font-size:12px;text-align:center;pointer-events:none;
+}
 .field>label{display:block;color:var(--muted);font-size:.8rem;margin-bottom:.4rem;text-transform:uppercase;letter-spacing:.04em}
 .seg{display:flex;gap:.3rem}
 .seg button{flex:1;background:#151c27;color:var(--muted);border:1px solid var(--line);border-radius:10px;padding:.55rem .4rem;font:inherit;font-size:.9rem;cursor:pointer}

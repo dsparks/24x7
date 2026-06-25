@@ -30,11 +30,18 @@
   <link rel="preconnect" href="https://api.open-meteo.com" crossorigin />
   <link rel="preconnect" href="https://geocoding-api.open-meteo.com" crossorigin />
   <!-- Download scripts in parallel with head parsing; execute after DOM is ready. -->
+  <script src="html2canvas.min.js" defer></script>
   <script src="shared.js" defer></script>
   <script src="lightning.js" defer></script>
   <script src="app.js" defer></script>
 </head>
 <body>
+  <!-- Screenshot-only framing used by the Bluesky bot (?bot=1). -->
+  <header class="bot-header" aria-hidden="true">
+    <strong>24×7</strong>
+    <span id="botPlace">Weather</span>
+  </header>
+
   <!-- Full-bleed grid lives here; built by app.js -->
   <div id="grid" class="grid" aria-label="Hourly weather grid"></div>
 
@@ -92,6 +99,7 @@
             <div class="place" id="placeName">—</div>
             <div class="place-sub" id="placeSub">Locating…</div>
           </div>
+          <button type="button" class="btn share-view" id="shareView">Share</button>
         </div>
 
         <div class="field">
@@ -205,6 +213,11 @@
       </div>
     </div>
   </div>
+
+  <footer class="bot-footer" aria-hidden="true">
+    <span>Forecast from Open-Meteo</span>
+    <span>dsparks.github.io/24x7</span>
+  </footer>
 
 </body>
 </html>

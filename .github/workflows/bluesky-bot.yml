@@ -1,0 +1,68 @@
+name: Bluesky weather bot
+
+on:
+  schedule:
+    - cron: "3,13,23,33,43,53 * * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Run without posting, or process live mentions
+        required: true
+        default: dry-run
+        type: choice
+        options:
+          - dry-run
+          - live
+      location:
+        description: Location to render in dry-run mode
+        required: true
+        default: Boston, MA
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bluesky-weather-bot
+  cancel-in-progress: false
+
+jobs:
+  respond:
+    if: github.event_name == 'workflow_dispatch' || vars.BLUESKY_BOT_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      BLUESKY_IDENTIFIER: ${{ secrets.BLUESKY_IDENTIFIER }}
+      BLUESKY_APP_PASSWORD: ${{ secrets.BLUESKY_APP_PASSWORD }}
+      BOT_DRY_RUN_LOCATION: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'dry-run' && inputs.location || '' }}
+      BOT_DRY_RUN_OUTPUT: bot-output.jpg
+
+    steps:
+      - name: Check out 24x7
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install bot dependencies
+        run: npm install --prefix bot --no-audit --no-fund
+
+      - name: Install Chromium
+        run: cd bot && npx playwright install --with-deps chromium
+
+      - name: Run unit tests
+        run: npm test --prefix bot
+
+      - name: Render or answer mentions
+        run: node bot/index.mjs
+
+      - name: Upload dry-run screenshot
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'dry-run'
+        uses: actions/upload-artifact@v4
+        with:
+          name: 24x7-bot-preview
+          path: bot-output.jpg
+          if-no-files-found: error
+          retention-days: 7

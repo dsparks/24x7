@@ -29,6 +29,53 @@ body{
   padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
 
+/* ---------- Bot screenshot framing (?bot=1) ---------- */
+.bot-header,.bot-footer{display:none}
+body.bot-render{
+  padding:64px 0 34px;
+}
+body.bot-render .bot-header,
+body.bot-render .bot-footer{
+  display:flex;
+  position:fixed;
+  left:0;right:0;
+  z-index:20;
+  align-items:center;
+  background:#0b0e14;
+  color:var(--ink);
+}
+body.bot-render .bot-header{
+  top:0;height:64px;
+  justify-content:space-between;
+  gap:18px;
+  padding:0 22px;
+  border-bottom:1px solid var(--gridline);
+}
+body.bot-render .bot-header strong{font-size:27px;letter-spacing:.02em}
+body.bot-render .bot-header span{
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  color:#d8dee9;
+  font-size:17px;
+  font-weight:600;
+  text-align:right;
+}
+body.bot-render .bot-footer{
+  bottom:0;height:34px;
+  justify-content:space-between;
+  padding:0 14px;
+  border-top:1px solid var(--gridline);
+  color:var(--muted);
+  font-size:11px;
+}
+body.bot-render .corner svg{display:none}
+body.bot-render .coach,
+body.bot-render .sheet,
+body.bot-render .tip,
+body.bot-render .legend{display:none!important}
+
 /* ---------- The grid ---------- */
 .grid{
   display:grid;
@@ -239,8 +286,19 @@ body{
 .sheet-body{display:flex;flex-direction:column;gap:1.05rem}
 
 .place-row{display:flex;align-items:center;justify-content:space-between;gap:.6rem}
+.place-row>div{min-width:0}
 .place{font-weight:700;font-size:1.05rem}
 .place-sub{color:var(--muted);font-size:.85rem;margin-top:1px}
+.share-view{flex:0 0 auto;color:#7fb0ff}
+.share-view:disabled{color:var(--muted);opacity:.45;cursor:default}
+
+.share-toast{
+  position:fixed;z-index:80;left:50%;bottom:max(18px,env(safe-area-inset-bottom));
+  transform:translateX(-50%);
+  max-width:calc(100vw - 28px);padding:9px 13px;border:1px solid var(--line);border-radius:8px;
+  background:rgba(10,14,22,.96);color:var(--ink);box-shadow:0 8px 28px rgba(0,0,0,.45);
+  font-size:12px;text-align:center;pointer-events:none;
+}
 
 .field>label{display:block;color:var(--muted);font-size:.8rem;margin-bottom:.4rem;text-transform:uppercase;letter-spacing:.04em}
 .btn{

@@ -1,0 +1,16 @@
+{
+  "name": "24x7-bluesky-bot",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node index.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@atproto/api": "0.20.16",
+    "playwright": "1.60.0"
+  }
+}

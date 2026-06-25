@@ -85,6 +85,120 @@
     return t ? `${prefix} ${new Date(t).toLocaleString([], { weekday:'short', hour:'numeric', minute:'2-digit' })}` : `${prefix} -`;
   }
 
+  function canvasBlob(canvas, type = 'image/png', quality){
+    return new Promise((resolve, reject) => {
+      canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Could not create the image')), type, quality);
+    });
+  }
+
+  function roundedRect(ctx, x, y, w, h, r){
+    const rr = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
+  }
+
+  function drawSnapshotLabel(ctx, width, height, text){
+    const size = Math.max(15, Math.min(26, Math.round(Math.min(width, height) * 0.035)));
+    const padX = Math.round(size * 0.7), padY = Math.round(size * 0.42);
+    const margin = Math.max(8, Math.round(size * 0.5));
+    ctx.save();
+    ctx.font = `700 ${size}px "Cascadia Mono","Cascadia Code",ui-monospace,monospace`;
+    ctx.textBaseline = 'middle';
+    const maxText = width - margin * 2 - padX * 2;
+    let label = text;
+    while (label.length > 4 && ctx.measureText(label + '…').width > maxText) label = label.slice(0, -1);
+    if (label !== text) label += '…';
+    const w = Math.min(width - margin * 2, Math.ceil(ctx.measureText(label).width + padX * 2));
+    const h = Math.ceil(size + padY * 2);
+    const x = width - margin - w, y = height - margin - h;
+    ctx.shadowColor = 'rgba(0,0,0,.6)';
+    ctx.shadowBlur = Math.round(size * 0.55);
+    ctx.fillStyle = 'rgba(0,0,0,.78)';
+    roundedRect(ctx, x, y, w, h, Math.round(size * 0.28));
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#fff';
+    ctx.fillText(label, x + padX, y + h / 2);
+    ctx.restore();
+  }
+
+  async function captureGridSnapshot(grid, overlays, label){
+    if (!grid || !grid.children.length) throw new Error('The grid is not ready yet');
+    if (!window.html2canvas) throw new Error('Screenshot renderer unavailable');
+    await document.fonts?.ready;
+    const rect = grid.getBoundingClientRect();
+    const width = Math.max(1, Math.round(rect.width));
+    const height = Math.max(1, Math.round(rect.height));
+    const scale = Math.min(2, devicePixelRatio || 1);
+    const canvas = await window.html2canvas(grid, {
+      backgroundColor: getComputedStyle(grid).backgroundColor || '#000',
+      scale,
+      logging: false,
+      removeContainer: true,
+      useCORS: true,
+    });
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    for (const overlay of overlays || []){
+      if (!overlay?.width || !overlay?.height) continue;
+      const r = overlay.getBoundingClientRect();
+      ctx.drawImage(overlay, r.left - rect.left, r.top - rect.top, r.width, r.height);
+    }
+    drawSnapshotLabel(ctx, width, height, label);
+    return canvasBlob(canvas);
+  }
+
+  function safeFilename(value){
+    return String(value || 'weather').toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'weather';
+  }
+
+  function showToast(message){
+    document.querySelector('.share-toast')?.remove();
+    const toast = document.createElement('div');
+    toast.className = 'share-toast';
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 2600);
+  }
+
+  async function createGridSnapshotFile(opts){
+    const { grid, overlays = [], appName, placeName, url, filenamePrefix = appName } = opts;
+    const place = placeName && placeName !== '—' ? placeName : 'Current location';
+    const label = `${appName} · ${place}`;
+    const blob = await captureGridSnapshot(grid, overlays, label);
+    return new File([blob], `${safeFilename(filenamePrefix)}-${safeFilename(place)}.png`, { type: 'image/png' });
+  }
+
+  async function shareSnapshotFile(file, opts){
+    const { appName, placeName, url } = opts;
+    const place = placeName && placeName !== '—' ? placeName : 'Current location';
+    const label = `${appName} · ${place}`;
+    const data = { files: [file], title: label, text: `${label}\n${url}`, url };
+    if (navigator.share && navigator.canShare?.({ files: [file] })){
+      await navigator.share(data);
+      return 'shared';
+    }
+    const objectUrl = URL.createObjectURL(blob);
+    try {
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = file.name;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      showToast('Screenshot saved');
+      return 'downloaded';
+    } finally {
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    }
+  }
+
   function registerFreshServiceWorker(script = 'sw.js'){
     if (!('serviceWorker' in navigator)) return;
     const hadController = !!navigator.serviceWorker.controller;
@@ -116,6 +230,6 @@
   window.AppCore = {
     pad2, ymdParts, forecastMeta, forecastNow, hourFromLocalIso,
     fetchJson, readJson, writeJson, coordsMatch, cacheMatches,
-    formatUpdated, registerFreshServiceWorker,
+    formatUpdated, createGridSnapshotFile, shareSnapshotFile, showToast, registerFreshServiceWorker,
   };
 })();

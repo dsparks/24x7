@@ -121,7 +121,12 @@ function loadSettings(){
 function saveSettings(){ try { localStorage.setItem(LS.settings, JSON.stringify(settings)); } catch {} }
 
 let place = { name: '—', sub: '' };
-function setPlace(name, sub){ place = { name, sub: sub || '' }; $('#placeName').textContent = name; $('#placeSub').textContent = sub || ''; }
+function setPlace(name, sub){
+  place = { name, sub: sub || '' };
+  $('#placeName').textContent = name;
+  $('#placeSub').textContent = sub || '';
+  if (!sheetEl.hidden) prepareShare();
+}
 let tideSource = '—';
 function setTideSrc(t){ tideSource = t; const el = $('#tideSrc'); if (el) el.textContent = t; }
 function setUpdatedAt(t, source = 'fresh'){
@@ -490,6 +495,7 @@ function render(){
   gridEl.replaceChildren(frag);
   layoutFx();
   refreshTip();                                 // keep an open popup pinned to its cell with fresh data
+  if (!sheetEl.hidden) prepareShare();
 }
 
 const DAY_SCALE = 0.8, HOUR_SCALE = 1.1, CW = 0.62;
@@ -1574,10 +1580,53 @@ makeDraggablePopup('tip', tipEl, () => { clearTimeout(tipTimer); if (!tipEl.hidd
 
 /* ---------- Settings sheet ---------- */
 const sheetEl = $('#settings');
-function openSheet(){ syncSheet(); sheetEl.hidden = false; }
+let shareFile = null, shareSeq = 0;
+async function prepareShare(){
+  const button = $('#shareView');
+  const seq = ++shareSeq;
+  shareFile = null;
+  button.disabled = true;
+  try {
+    const file = await AppCore.createGridSnapshotFile({
+      grid: gridEl,
+      overlays: [fx.canvas],
+      appName: 'Ebb',
+      placeName: place.name,
+      filenamePrefix: 'ebb',
+    });
+    if (seq !== shareSeq) return;
+    shareFile = file;
+    button.disabled = false;
+  } catch (err) {
+    if (seq !== shareSeq) return;
+    console.warn(err);
+  }
+}
+function openSheet(){ syncSheet(); sheetEl.hidden = false; prepareShare(); }
 function closeSheet(){ sheetEl.hidden = true; }
 sheetEl.addEventListener('click', e => { if (e.target.dataset.close !== undefined) closeSheet(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !sheetEl.hidden) closeSheet(); });
+$('#shareView').addEventListener('click', async () => {
+  const button = $('#shareView');
+  if (!shareFile) return;
+  button.disabled = true;
+  closeSheet();
+  hideTip();
+  try {
+    await AppCore.shareSnapshotFile(shareFile, {
+      appName: 'Ebb',
+      placeName: place.name,
+      url: 'https://dsparks.github.io/24x7/ebb.html',
+    });
+  } catch (err) {
+    if (err?.name !== 'AbortError'){
+      console.warn(err);
+      AppCore.showToast('Couldn’t create the screenshot');
+    }
+  } finally {
+    button.disabled = false;
+  }
+});
 function syncSheet(){
   $('#placeName').textContent = place.name; $('#placeSub').textContent = place.sub || '';
   document.querySelectorAll('.seg').forEach(seg => { const v = String(settings[seg.dataset.setting]); seg.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.value === v)); });
