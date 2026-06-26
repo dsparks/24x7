@@ -1589,20 +1589,30 @@ function setShareButtonReady(ready){
   const button = $('#shareView');
   button.disabled = !ready;
 }
-function invalidateShare(delay = 150){
-  shareRevision++;
-  shareFile = null;
-  shareBuiltRevision = -1;
-  setShareButtonReady(false);
+function shareDataReady(){
+  return !!currentForecastMeta && days.some(day => day.cells.some(cell => cell?.tideFt != null));
+}
+function scheduleSharePrepare(delay = 150){
   clearTimeout(shareTimer);
-  if (gridEl.classList.contains('loading')) return;
+  if (!shareDataReady() || gridEl.classList.contains('loading')) return;
   shareTimer = setTimeout(() => {
     const start = () => prepareShare();
     if ('requestIdleCallback' in window) requestIdleCallback(start, { timeout: 500 });
     else start();
   }, delay);
 }
+function invalidateShare(delay = 150){
+  shareRevision++;
+  shareFile = null;
+  shareBuiltRevision = -1;
+  setShareButtonReady(false);
+  scheduleSharePrepare(delay);
+}
 async function prepareShare(){
+  if (!shareDataReady() || gridEl.classList.contains('loading')){
+    setShareButtonReady(false);
+    return;
+  }
   if (shareFile && shareBuiltRevision === shareRevision){
     setShareButtonReady(true);
     return;
@@ -1627,7 +1637,7 @@ async function prepareShare(){
     console.warn(err);
   } finally {
     sharePreparing = false;
-    if (revision !== shareRevision || (!shareFile && !gridEl.classList.contains('loading'))) invalidateShare(100);
+    if (revision !== shareRevision) scheduleSharePrepare(100);
   }
 }
 function openSheet(){
