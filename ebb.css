@@ -31,6 +31,9 @@ body{
   background:var(--bg);user-select:none;touch-action:none;
 }
 .corner,.head,.cell{border-right:.5px solid #7f7f7f7f;border-bottom:0}
+.grid.snapshot-no-cell-borders .cell{
+  border-color:transparent;
+}
 
 .corner{
   display:flex;align-items:center;justify-content:center;

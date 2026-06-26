@@ -3,7 +3,7 @@
  * with cache fallback so they still launch offline.
  * Weather API calls are never cached here; the app keeps its last forecast in
  * localStorage and repaints from that on load. */
-const CACHE = 'grid-v144';
+const CACHE = 'grid-v145';
 const SHELL = [
   '.', 'index.html', 'styles.css', 'html2canvas.min.js', 'shared.js', 'app.js', 'lightning.js', 'manifest.json', 'icon.svg', 'share-24x7.svg', 'share-ebb.svg',
   'ebb.html', 'ebb.css', 'ebb.js', 'ebb.webmanifest', 'ebb.svg',

@@ -1454,6 +1454,7 @@ async function prepareShare(){
       appName: APP_NAME,
       placeName: place.name,
       filenamePrefix: '24x7',
+      snapshotClass: 'snapshot-no-cell-borders',
     });
     if (revision !== shareRevision) return;
     shareFile = file;

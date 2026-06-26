@@ -568,8 +568,9 @@ function layoutFx(){
     const c = days[+el.dataset.di]?.cells[+el.dataset.h]; if (!c) return;
     const r = el.getBoundingClientRect();
     const cs = getComputedStyle(el);
-    const bw = parseFloat(cs.borderRightWidth) || 0;
-    const bh = parseFloat(cs.borderBottomWidth) || 0;
+    const borderless = gridEl.classList.contains('snapshot-no-cell-borders');
+    const bw = borderless ? 0 : parseFloat(cs.borderRightWidth) || 0;
+    const bh = borderless ? 0 : parseFloat(cs.borderBottomWidth) || 0;
     const fc = { di: +el.dataset.di, h: +el.dataset.h, cell: c, x: r.left - g.left, y: r.top - g.top, w: Math.max(1, r.width - bw), hgt: Math.max(1, r.height - bh) };
     buildCellFx(fc); fx.cells.push(fc);
   });
@@ -642,6 +643,7 @@ function drawCell(fc, dt){
   ctx.restore();
 }
 function drawWaterSeams(){
+  if (gridEl.classList.contains('snapshot-no-cell-borders')) return;
   const ctx = fx.ctx;
   ctx.save();
   ctx.fillStyle = '#000';
@@ -656,6 +658,16 @@ function drawWaterSeams(){
     }
   }
   ctx.restore();
+}
+
+function drawFxStill(){
+  if (!fx.ctx) return;
+  fx.ctx.clearRect(0, 0, fx.w, fx.h);
+  for (const fc of fx.cells) drawCell(fc, 0);
+  drawWaterSeams();
+  drawNowLine();
+  drawSelectedCell();
+  drawDelight();
 }
 /* ---------- Water-surface renderers ----------
  * Switch with CHOP_VERSION: 1 = gentle two-wave chop (the original "chop 1.0"),
@@ -1274,7 +1286,7 @@ function frame(now){
 function startFx(){
   cancelAnimationFrame(fx.raf); fx.raf = 0;
   if (!fx.cells.length){ fx.ctx?.clearRect(0, 0, fx.w, fx.h); return; }
-  if (reduceMotion.matches){ fx.ctx.clearRect(0, 0, fx.w, fx.h); fx.t = 0; for (const fc of fx.cells) drawCell(fc, 0); drawWaterSeams(); drawNowLine(); drawSelectedCell(); drawDelight(); return; }
+  if (reduceMotion.matches){ fx.t = 0; drawFxStill(); return; }
   fx.last = performance.now(); fx.raf = requestAnimationFrame(frame);
 }
 document.addEventListener('visibilitychange', () => { if (document.hidden){ cancelAnimationFrame(fx.raf); fx.raf = 0; } else startFx(); });
@@ -1627,6 +1639,13 @@ async function prepareShare(){
       appName: 'Ebb',
       placeName: place.name,
       filenamePrefix: 'ebb',
+      snapshotClass: 'snapshot-no-cell-borders',
+      beforeCapture: async () => {
+        cancelAnimationFrame(fx.raf); fx.raf = 0;
+        layoutFx();
+        drawFxStill();
+      },
+      afterCapture: async () => layoutFx(),
     });
     if (revision !== shareRevision) return;
     shareFile = file;

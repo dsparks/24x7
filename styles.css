@@ -93,6 +93,14 @@ body.bot-render .legend{display:none!important}
   border-right:1px solid var(--gridline);
   border-bottom:1px solid var(--gridline);
 }
+.grid.snapshot-no-cell-borders{
+  --gridline:transparent;
+}
+.grid.snapshot-no-cell-borders .cell{
+  border-color:transparent;
+  transform:scale(1.012);
+  z-index:0;
+}
 
 /* corner / gear */
 .corner{

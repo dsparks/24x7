@@ -159,35 +159,42 @@
     return style.display !== 'inline' && parseFloat(style.fontSize) >= 7;
   }
 
-  async function captureGridSnapshot(grid, overlays, label){
+  async function captureGridSnapshot(grid, overlays, label, snapshotClass, beforeCapture, afterCapture){
     if (!gridReadyForSnapshot(grid)) throw new Error('The grid is not ready yet');
     if (!window.html2canvas) throw new Error('Screenshot renderer unavailable');
-    await document.fonts?.ready;
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    if (!gridReadyForSnapshot(grid)) throw new Error('The grid changed while preparing the screenshot');
-    const rect = grid.getBoundingClientRect();
-    const width = Math.max(1, Math.round(rect.width));
-    const height = Math.max(1, Math.round(rect.height));
-    // CSS-pixel resolution is ample for a dense grid and is dramatically faster
-    // than re-rendering the whole screen at a phone's 2x/3x device pixel ratio.
-    const scale = 1;
-    localizeStylesheets();
-    const canvas = await window.html2canvas(grid, {
-      backgroundColor: getComputedStyle(grid).backgroundColor || '#000',
-      scale,
-      logging: false,
-      removeContainer: true,
-      useCORS: true,
-    });
-    const ctx = canvas.getContext('2d');
-    ctx.setTransform(scale, 0, 0, scale, 0, 0);
-    for (const overlay of overlays || []){
-      if (!overlay?.width || !overlay?.height) continue;
-      const r = overlay.getBoundingClientRect();
-      ctx.drawImage(overlay, r.left - rect.left, r.top - rect.top, r.width, r.height);
+    if (snapshotClass) grid.classList.add(snapshotClass);
+    try {
+      if (typeof beforeCapture === 'function') await beforeCapture();
+      await document.fonts?.ready;
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      if (!gridReadyForSnapshot(grid)) throw new Error('The grid changed while preparing the screenshot');
+      const rect = grid.getBoundingClientRect();
+      const width = Math.max(1, Math.round(rect.width));
+      const height = Math.max(1, Math.round(rect.height));
+      // CSS-pixel resolution is ample for a dense grid and is dramatically faster
+      // than re-rendering the whole screen at a phone's 2x/3x device pixel ratio.
+      const scale = 1;
+      localizeStylesheets();
+      const canvas = await window.html2canvas(grid, {
+        backgroundColor: getComputedStyle(grid).backgroundColor || '#000',
+        scale,
+        logging: false,
+        removeContainer: true,
+        useCORS: true,
+      });
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(scale, 0, 0, scale, 0, 0);
+      for (const overlay of overlays || []){
+        if (!overlay?.width || !overlay?.height) continue;
+        const r = overlay.getBoundingClientRect();
+        ctx.drawImage(overlay, r.left - rect.left, r.top - rect.top, r.width, r.height);
+      }
+      drawSnapshotLabel(ctx, width, height, label);
+      return canvasBlob(canvas);
+    } finally {
+      if (snapshotClass) grid.classList.remove(snapshotClass);
+      if (typeof afterCapture === 'function') await afterCapture();
     }
-    drawSnapshotLabel(ctx, width, height, label);
-    return canvasBlob(canvas);
   }
 
   function safeFilename(value){
@@ -205,10 +212,10 @@
   }
 
   async function createGridSnapshotFile(opts){
-    const { grid, overlays = [], appName, placeName, url, filenamePrefix = appName } = opts;
+    const { grid, overlays = [], appName, placeName, url, filenamePrefix = appName, snapshotClass = '', beforeCapture = null, afterCapture = null } = opts;
     const place = placeName && placeName !== '—' ? placeName : 'Current location';
     const label = `${appName} · ${place}`;
-    const blob = await captureGridSnapshot(grid, overlays, label);
+    const blob = await captureGridSnapshot(grid, overlays, label, snapshotClass, beforeCapture, afterCapture);
     return new File([blob], `${safeFilename(filenamePrefix)}-${safeFilename(place)}.png`, { type: 'image/png' });
   }
 
