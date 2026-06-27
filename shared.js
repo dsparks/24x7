@@ -162,7 +162,6 @@
   async function captureGridSnapshot(grid, overlays, label, snapshotClass, beforeCapture, afterCapture){
     if (!gridReadyForSnapshot(grid)) throw new Error('The grid is not ready yet');
     if (!window.html2canvas) throw new Error('Screenshot renderer unavailable');
-    if (snapshotClass) grid.classList.add(snapshotClass);
     try {
       if (typeof beforeCapture === 'function') await beforeCapture();
       await document.fonts?.ready;
@@ -181,6 +180,11 @@
         logging: false,
         removeContainer: true,
         useCORS: true,
+        onclone: clonedDoc => {
+          if (!snapshotClass) return;
+          const clonedGrid = grid.id ? clonedDoc.getElementById(grid.id) : null;
+          clonedGrid?.classList.add(snapshotClass);
+        },
       });
       const ctx = canvas.getContext('2d');
       ctx.setTransform(scale, 0, 0, scale, 0, 0);
@@ -192,7 +196,6 @@
       drawSnapshotLabel(ctx, width, height, label);
       return canvasBlob(canvas);
     } finally {
-      if (snapshotClass) grid.classList.remove(snapshotClass);
       if (typeof afterCapture === 'function') await afterCapture();
     }
   }

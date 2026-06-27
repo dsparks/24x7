@@ -568,7 +568,7 @@ function layoutFx(){
     const c = days[+el.dataset.di]?.cells[+el.dataset.h]; if (!c) return;
     const r = el.getBoundingClientRect();
     const cs = getComputedStyle(el);
-    const borderless = gridEl.classList.contains('snapshot-no-cell-borders');
+    const borderless = gridEl.classList.contains('snapshot-rendering');
     const bw = borderless ? 0 : parseFloat(cs.borderRightWidth) || 0;
     const bh = borderless ? 0 : parseFloat(cs.borderBottomWidth) || 0;
     const fc = { di: +el.dataset.di, h: +el.dataset.h, cell: c, x: r.left - g.left, y: r.top - g.top, w: Math.max(1, r.width - bw), hgt: Math.max(1, r.height - bh) };
@@ -579,7 +579,7 @@ function layoutFx(){
 }
 function drawCell(fc, dt){
   const ctx = fx.ctx, c = fc.cell;
-  const noBorders = gridEl.classList.contains('snapshot-no-cell-borders');
+  const noBorders = gridEl.classList.contains('snapshot-rendering');
   const bleedX = noBorders ? 0.85 : 0;
   const left = fc.x - bleedX, top = fc.y, w = fc.w + bleedX * 2, h = fc.hgt, bottom = top + h;
   const waterTop = top + (1 - (c.waterFrac ?? 0.45)) * h;
@@ -645,7 +645,7 @@ function drawCell(fc, dt){
   ctx.restore();
 }
 function drawWaterSeams(){
-  if (gridEl.classList.contains('snapshot-no-cell-borders')) return;
+  if (gridEl.classList.contains('snapshot-rendering')) return;
   const ctx = fx.ctx;
   ctx.save();
   ctx.fillStyle = '#000';
@@ -1643,11 +1643,15 @@ async function prepareShare(){
       filenamePrefix: 'ebb',
       snapshotClass: 'snapshot-no-cell-borders',
       beforeCapture: async () => {
+        gridEl.classList.add('snapshot-rendering');
         cancelAnimationFrame(fx.raf); fx.raf = 0;
         layoutFx();
         drawFxStill();
       },
-      afterCapture: async () => layoutFx(),
+      afterCapture: async () => {
+        gridEl.classList.remove('snapshot-rendering');
+        layoutFx();
+      },
     });
     if (revision !== shareRevision) return;
     shareFile = file;
