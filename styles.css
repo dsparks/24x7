@@ -156,6 +156,15 @@ body.bot-render .legend{display:none!important}
 .cell .nowline::after{content:"";position:absolute;width:7px;height:7px;border-radius:50%;background:#ff2b2b;box-shadow:0 0 8px 1px rgba(255,43,43,.85)}
 .grid.p .cell .nowline::after{left:0;top:50%;transform:translateY(-50%)}
 .grid.l .cell .nowline::after{top:0;left:50%;transform:translateX(-50%)}
+.cell .sunmark{
+  position:absolute;z-index:5;pointer-events:none;border-radius:999px;
+  --sun:#ffbf3f;--glow:rgba(255,191,63,.72);--soft:rgba(255,191,63,.22);
+  background:var(--sun);box-shadow:0 0 14px 5px var(--glow);
+}
+.cell .sunmark.rise{--sun:#ffbf3f;--glow:rgba(255,191,63,.72);--soft:rgba(255,191,63,.22)}
+.cell .sunmark.set{--sun:#ff5a2e;--glow:rgba(255,90,46,.72);--soft:rgba(255,90,46,.22)}
+.grid.p .cell .sunmark{left:0;right:0;height:1px;top:calc(var(--frac,0) * 100%)}
+.grid.l .cell .sunmark{top:0;bottom:0;width:1px;left:calc(var(--frac,0) * 100%)}
 
 .cell .t{
   position:absolute;left:50%;top:50%;
@@ -212,6 +221,7 @@ body.bot-render .legend{display:none!important}
 .tip .tip-primary{display:flex;align-items:baseline;justify-content:center;gap:6px;margin-top:3px}
 .tip .tip-primary-label{font-size:.9em;color:var(--muted);font-weight:600}
 .tip .tip-primary strong{font-size:1.35em;line-height:1.1;font-weight:700}
+.tip .tip-event{display:block;margin-top:4px;color:var(--ink);font-weight:600}
 .tip .tip-facts{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;margin-top:4px;color:var(--ink)}
 .tip .tip-facts>span+span::before{content:"·";padding:0 6px;color:var(--muted)}
 .tip .tip-why{display:block;margin-top:7px;padding-top:6px;border-top:1px solid var(--line);font-size:.78em;line-height:1.5;color:var(--muted);text-align:left;font-variant-numeric:tabular-nums}

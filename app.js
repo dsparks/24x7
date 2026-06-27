@@ -245,6 +245,14 @@ function fmtHourLong(h){
   if (h === 0) return '12 AM'; if (h === 12) return '12 PM';
   return h < 12 ? `${h} AM` : `${h-12} PM`;
 }
+function fmtClockMinute(hour, minute){
+  const h = ((hour % 24) + 24) % 24;
+  const m = String(Math.max(0, Math.min(59, Math.round(minute)))).padStart(2, '0');
+  if (clock24()) return `${String(h).padStart(2, '0')}:${m}`;
+  const ap = h < 12 ? 'AM' : 'PM';
+  const hh = h % 12 || 12;
+  return `${hh}:${m} ${ap}`;
+}
 
 /* ---------- State ---------- */
 let currentForecastMeta = null;
@@ -560,6 +568,38 @@ function placeNowLine(){
   nowFrac = now.minute / 60;
   const cell = gridEl.querySelector(`.cell[data-di="${di}"][data-h="${now.hour}"]`);
   if (cell && !cell.classList.contains('empty')) cell.appendChild(nowLineEl());
+}
+function solarEventsForDay(day){
+  const out = [];
+  const eventFromHour = (type, label, value) => {
+    const h = ((value % 24) + 24) % 24;
+    return { type, label, hour: Math.floor(h), minute: (h % 1) * 60 };
+  };
+  if (Number.isFinite(day?.riseH)) out.push(eventFromHour('rise', 'Sunrise', day.riseH));
+  if (Number.isFinite(day?.setH)){
+    out.push(eventFromHour('set', 'Sunset', day.setH));
+  }
+  return out.filter(ev => ev.hour >= 0 && ev.hour < 24);
+}
+function solarEventsForHour(day, h){
+  return solarEventsForDay(day).filter(ev => ev.hour === h);
+}
+function clearSunMarkers(){
+  gridEl.querySelectorAll('.sunmark').forEach(el => el.remove());
+}
+function placeSunMarkers(di){
+  clearSunMarkers();
+  const day = days[di];
+  if (!day) return;
+  for (const ev of solarEventsForDay(day)){
+    const cell = gridEl.querySelector(`.cell[data-di="${di}"][data-h="${ev.hour}"]`);
+    if (!cell || cell.classList.contains('empty')) continue;
+    const line = document.createElement('div');
+    line.className = `sunmark ${ev.type}`;
+    line.title = `${ev.label} ${fmtClockMinute(ev.hour, ev.minute)}`;
+    line.style.setProperty('--frac', (Math.max(0, Math.min(59, ev.minute)) / 60).toFixed(4));
+    cell.appendChild(line);
+  }
 }
 
 function corner(){
@@ -1349,6 +1389,7 @@ function showTip(di, h, el){
   if (selEl) selEl.classList.remove('sel');
   const c = cellRGB(cell);
   selEl = el; selDi = di; selH = h; el.classList.add('sel');
+  placeSunMarkers(di);
 
   const color = rgbStr(c);
   const tF = Math.round(displayTemp(cell.c));
@@ -1375,7 +1416,11 @@ function showTip(di, h, el){
       .join('');
     why = `<span class="tip-why">${rows}<span class="tip-calc-total"><span>Geometric mean</span><b>${runIndex(cell)}</b></span></span>`;
   }
-  tipEl.innerHTML = head + primary + why;
+  const solar = solarEventsForHour(day, h)
+    .map(ev => `${ev.label} · ${fmtClockMinute(ev.hour, ev.minute)}`)
+    .join(' · ');
+  const event = solar ? `<span class="tip-event">${escapeHtml(solar)}</span>` : '';
+  tipEl.innerHTML = head + primary + why + event;
   tipEl.classList.toggle('top', orientation === 'p');   // portrait: sit over the wee hours
   const cellH = gridEl.querySelector('.cell:not(.empty)')?.getBoundingClientRect().height || 0;
   tipEl.style.setProperty('--tip-shift', Math.round(cellH) + 'px');   // nudge up one rectangle
@@ -1389,6 +1434,7 @@ function hideTip(){
   clearTimeout(tipTimer);
   tipEl.hidden = true;
   if (selEl){ selEl.classList.remove('sel'); selEl = null; }
+  clearSunMarkers();
   selDi = selH = null;
 }
 // After a re-render (location swipe, view toggle, refresh), re-pin the popup to the

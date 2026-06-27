@@ -579,7 +579,9 @@ function layoutFx(){
 }
 function drawCell(fc, dt){
   const ctx = fx.ctx, c = fc.cell;
-  const left = fc.x, top = fc.y, w = fc.w, h = fc.hgt, bottom = top + h;
+  const noBorders = gridEl.classList.contains('snapshot-no-cell-borders');
+  const bleedX = noBorders ? 0.85 : 0;
+  const left = fc.x - bleedX, top = fc.y, w = fc.w + bleedX * 2, h = fc.hgt, bottom = top + h;
   const waterTop = top + (1 - (c.waterFrac ?? 0.45)) * h;
   ctx.save();
   ctx.beginPath(); ctx.rect(left, top, w, h); ctx.clip();

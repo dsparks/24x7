@@ -17,3 +17,19 @@ Saved for future reference after the seven-row sampler.
 ## Current Direction
 
 The cleanest live direction is the tap locator: keep the grid quiet by default, then reveal all high/low tide turns for a tapped day. Each day can use its own high/low color pair while retaining the same interaction.
+
+# 24x7 Sunrise/Sunset Marker Experiments
+
+Saved after the five-day sampler for sunrise/sunset markers.
+
+## Tried Concepts
+
+- Horizon tick: a tiny sun disc half hidden by a horizon line. Charming, but a little more decorative than the grid needs.
+- Soft glow line: a precise 1px minute marker with a warm glow. Chosen as the live direction.
+- Tiny sun glyph: a small sun icon at the event minute. Legible, but too icon-like at cell scale.
+- Edge notch: a small colored notch at the cell edge, with sunrise and sunset using opposite edges. Worth revisiting if full-cell lines feel too dominant.
+- Mini gradient band: a slender warm band centered on the event minute. Worth revisiting if we want a more atmospheric, less ruler-like treatment.
+
+## Current Direction
+
+Use soft glow lines for sunrise and sunset: yellow-orange for sunrise and red-orange for sunset. Tapping any cell in a day reveals both markers; tapping the event hour also lists the exact event in the popup.

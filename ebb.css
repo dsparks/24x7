@@ -33,6 +33,8 @@ body{
 .corner,.head,.cell{border-right:.5px solid #7f7f7f7f;border-bottom:0}
 .grid.snapshot-no-cell-borders .cell{
   border-color:transparent;
+  transform:scaleX(1.035);
+  z-index:0;
 }
 
 .corner{
