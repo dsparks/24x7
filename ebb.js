@@ -185,14 +185,21 @@ function toDays(j){
 
 /* ---------- NOAA tides (US), with synthetic fallback ---------- */
 const NOAA_STATIONS = 'https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations.json?type=tidepredictions';
+let stationsMemo = null, stationsPromise = null;
 async function getStations(){
+  if (stationsMemo) return stationsMemo;
   const c = AppCore.readJson(LS.stations);
-  if (c && Date.now() - c.t < 30 * 86400000) return c.list;
-  const j = await AppCore.fetchJson(NOAA_STATIONS, { label: 'NOAA stations', timeoutMs: 9000 });
-  const list = (j.stations || []).map(s => ({ id: s.id, name: s.name, state: s.state, lat: +s.lat, lon: +s.lng }))
-    .filter(s => Number.isFinite(s.lat) && Number.isFinite(s.lon));
-  AppCore.writeJson(LS.stations, { t: Date.now(), list });
-  return list;
+  if (c && Date.now() - c.t < 30 * 86400000) return (stationsMemo = c.list);
+  if (stationsPromise) return stationsPromise;
+  stationsPromise = AppCore.fetchJson(NOAA_STATIONS, { label: 'NOAA stations', timeoutMs: 9000 })
+    .then(j => {
+      const list = (j.stations || []).map(s => ({ id: s.id, name: s.name, state: s.state, lat: +s.lat, lon: +s.lng }))
+        .filter(s => Number.isFinite(s.lat) && Number.isFinite(s.lon));
+      AppCore.writeJson(LS.stations, { t: Date.now(), list });
+      return (stationsMemo = list);
+    })
+    .finally(() => { stationsPromise = null; });
+  return stationsPromise;
 }
 async function nearestStation(lat, lon){
   const list = await getStations();
@@ -323,7 +330,16 @@ function enrichMoon(days, offset){
 let days = [], orientation = 'p', loadSeq = 0, lastCoords = null, testMode = false, currentForecastMeta = null;
 let myCoords = null, myPlace = null;
 const fcCache = new Map();
+const forecastRequests = new Map();
 const fcKey = (lat, lon) => `${(+lat).toFixed(3)},${(+lon).toFixed(3)}`;
+function fetchForecast(lat, lon){
+  const key = fcKey(lat, lon);
+  if (forecastRequests.has(key)) return forecastRequests.get(key);
+  const request = AppCore.fetchJson(buildUrl(lat, lon), { label: 'Weather', timeoutMs: 15000 })
+    .finally(() => forecastRequests.delete(key));
+  forecastRequests.set(key, request);
+  return request;
+}
 function cacheForecast(lat, lon, json, t = Date.now()){
   fcCache.set(fcKey(lat, lon), { json, t });
   while (fcCache.size > 8) fcCache.delete(fcCache.keys().next().value);
@@ -364,20 +380,19 @@ function applySimulatedTides(lon, label = 'Tide: simulated'){
   enrichTide(days);
   setTideSrc(label);
 }
-async function loadTides(lat, lon, start, seq){
+async function loadTides(lat, lon, start, seq, stationPromise = null){
   try {
-    const st = await nearestStation(lat, lon);
+    const st = await (stationPromise || nearestStation(lat, lon));
     if (!st) throw new Error('no station');
-    const map = await fetchTides(st.id, start);
+    const [mapResult, marksResult] = await Promise.allSettled([
+      fetchTides(st.id, start),
+      fetchTideMarks(st.id, start),
+    ]);
     if (seq !== loadSeq) return false;
-    applyTideMap(days, map);
-    try {
-      const marks = await fetchTideMarks(st.id, start);
-      if (seq !== loadSeq) return false;
-      applyTideMarks(days, marks);
-    } catch {
-      synthTideMarks(days);
-    }
+    if (mapResult.status !== 'fulfilled') throw mapResult.reason;
+    applyTideMap(days, mapResult.value);
+    if (marksResult.status === 'fulfilled') applyTideMarks(days, marksResult.value);
+    else synthTideMarks(days);
     if (![...days].some(d => d.cells.some(c => c && c.tideFt != null))) throw new Error('empty');
     if (![...days].some(d => d.cells.some(c => c && c.tideMark))) synthTideMarks(days);
     setTideSrc(`Tide: ${st.name}`);
@@ -393,6 +408,7 @@ async function load(lat, lon){
   const seq = ++loadSeq;
   testMode = false;
   lastCoords = { lat, lon };
+  const stationPromise = nearestStation(lat, lon).catch(() => null);
   const cache = readCache();
   const warm = fcCache.get(fcKey(lat, lon)) || (cacheMatches(cache, lat, lon) ? cache : null);
   const hadCache = !!warm;
@@ -405,7 +421,7 @@ async function load(lat, lon){
     showLoadingScaffold();
   }
   try {
-    const fc = await AppCore.fetchJson(buildUrl(lat, lon), { label: 'Weather', timeoutMs: 15000 });
+    const fc = await fetchForecast(lat, lon);
     if (seq !== loadSeq) return;
     const fetchedAt = Date.now();
     writeCache(lat, lon, fc, fetchedAt);
@@ -414,8 +430,8 @@ async function load(lat, lon){
     const start = days[0]?.date || new Date();
     resetDelight();
     render();                                   // paint sky immediately; tides fill in next
-    prefetchNeighbors();
-    await loadTides(lat, lon, start, seq);
+    await loadTides(lat, lon, start, seq, stationPromise);
+    if (seq === loadSeq) prefetchNeighbors();
   } catch {
     if (seq !== loadSeq) return;
     if (hadCache){
@@ -429,7 +445,7 @@ async function load(lat, lon){
   } finally {
     if (seq === loadSeq){
       gridEl.classList.remove('loading');
-      invalidateShare(100);
+      invalidateShare();
     }
   }
 }
@@ -1405,7 +1421,7 @@ function prefetchNeighbors(){
     const k = fcKey(c.lat, c.lon);
     if (seen.has(k) || fcCache.has(k)) continue;
     seen.add(k);
-    AppCore.fetchJson(buildUrl(c.lat, c.lon), { label: 'Weather', timeoutMs: 15000 })
+    fetchForecast(c.lat, c.lon)
       .then(json => cacheForecast(c.lat, c.lon, json))
       .catch(() => {});
   }
@@ -1598,7 +1614,7 @@ makeDraggablePopup('tip', tipEl, () => { clearTimeout(tipTimer); if (!tipEl.hidd
 /* ---------- Settings sheet ---------- */
 const sheetEl = $('#settings');
 let shareFile = null, shareRevision = 0, shareBuiltRevision = -1;
-let sharePreparing = false, shareTimer = 0;
+let sharePreparing = false;
 function setShareButtonReady(ready){
   const button = $('#shareView');
   button.disabled = !ready;
@@ -1606,21 +1622,12 @@ function setShareButtonReady(ready){
 function shareDataReady(){
   return !!currentForecastMeta && days.some(day => day.cells.some(cell => cell?.tideFt != null));
 }
-function scheduleSharePrepare(delay = 150){
-  clearTimeout(shareTimer);
-  if (!shareDataReady() || gridEl.classList.contains('loading')) return;
-  shareTimer = setTimeout(() => {
-    const start = () => prepareShare();
-    if ('requestIdleCallback' in window) requestIdleCallback(start, { timeout: 500 });
-    else start();
-  }, delay);
-}
-function invalidateShare(delay = 150){
+function invalidateShare(){
   shareRevision++;
   shareFile = null;
   shareBuiltRevision = -1;
   setShareButtonReady(false);
-  scheduleSharePrepare(delay);
+  if (!sheetEl.hidden) setTimeout(() => { if (!sheetEl.hidden) prepareShare(); }, 0);
 }
 async function prepareShare(){
   if (!shareDataReady() || gridEl.classList.contains('loading')){
@@ -1662,7 +1669,9 @@ async function prepareShare(){
     console.warn(err);
   } finally {
     sharePreparing = false;
-    if (revision !== shareRevision) scheduleSharePrepare(100);
+    if (revision !== shareRevision && !sheetEl.hidden){
+      setTimeout(() => { if (!sheetEl.hidden) prepareShare(); }, 0);
+    }
   }
 }
 function openSheet(){

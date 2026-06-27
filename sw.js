@@ -1,13 +1,13 @@
 /* 24×7 service worker — offline app shell.
- * Network-first for the app's own files so installed PWAs stay current online,
- * with cache fallback so they still launch offline.
+ * Versioned shell files are cache-first for instant repeat loads. The page checks
+ * sw.js separately and activates a fresh cache whenever this version changes.
  * Weather API calls are never cached here; the app keeps its last forecast in
  * localStorage and repaints from that on load. */
-const CACHE = 'grid-v150';
+const CACHE = 'grid-v152';
 const SHELL = [
-  '.', 'index.html', 'styles.css', 'html2canvas.min.js', 'shared.js', 'app.js', 'lightning.js', 'manifest.json', 'icon.svg', 'share-24x7.svg', 'share-ebb.svg',
+  '.', 'index.html', 'styles.css', 'shared.js', 'app.js', 'lightning.js', 'manifest.json', 'icon.svg', 'share-24x7.svg', 'share-ebb.svg',
   'ebb.html', 'ebb.css', 'ebb.js', 'ebb.webmanifest', 'ebb.svg',
-  'fonts/cascadia-mono-400.woff2', 'fonts/cascadia-mono-500.woff2', 'fonts/cascadia-mono-600.woff2', 'fonts/cascadia-mono-700.woff2',
+  'fonts/cascadia-mono-400.woff2', 'fonts/cascadia-mono-600.woff2', 'fonts/cascadia-mono-700.woff2',
 ];
 
 self.addEventListener('install', e => {
@@ -30,29 +30,18 @@ self.addEventListener('fetch', e => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
 
-  // Ebb (sibling prototype) → network-first so edits show immediately; cache as offline fallback.
-  if (url.origin === location.origin && url.pathname.includes('ebb.')) {
-    e.respondWith(
-      fetch(req, { cache: 'reload' }).then(res => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const copy = res.clone(); caches.open(CACHE).then(c => c.put(req, copy)).catch(() => {}); return res;
-      })
-        .catch(() => caches.match(req))
-    );
-    return;
-  }
-
-  // Same-origin app shell → network-first, fall back to cache offline.
-  // This keeps the installed PWA and browser view on the latest deployed files
-  // whenever the network is available.
+  // Versioned app-shell assets are immutable within a service-worker release.
+  // Serve them immediately from cache; registerFreshServiceWorker() separately
+  // checks sw.js for updates and activates a newly versioned shell.
   if (url.origin === location.origin) {
     e.respondWith(
-      fetch(req, { cache: 'reload' }).then(res => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const copy = res.clone();
-        caches.open(CACHE).then(c => c.put(req, copy)).catch(() => {});
+      caches.match(req).then(hit => hit || fetch(req).then(res => {
+        if (res.ok){
+          const copy = res.clone();
+          caches.open(CACHE).then(c => c.put(req, copy)).catch(() => {});
+        }
         return res;
-      }).catch(() => caches.match(req).then(hit => hit || caches.match('index.html')))
+      })).catch(() => req.mode === 'navigate' ? caches.match('index.html') : Response.error())
     );
     return;
   }

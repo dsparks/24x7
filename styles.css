@@ -1,7 +1,6 @@
 /* Self-hosted Cascadia Mono (SIL OFL 1.1), Latin subset via Fontsource (~17KB/weight).
    url()-only src (no local()) so every device renders the identical face, online or off. */
 @font-face{font-family:'Cascadia Mono';font-style:normal;font-weight:400;font-display:swap;src:url('fonts/cascadia-mono-400.woff2') format('woff2')}
-@font-face{font-family:'Cascadia Mono';font-style:normal;font-weight:500;font-display:swap;src:url('fonts/cascadia-mono-500.woff2') format('woff2')}
 @font-face{font-family:'Cascadia Mono';font-style:normal;font-weight:600;font-display:swap;src:url('fonts/cascadia-mono-600.woff2') format('woff2')}
 @font-face{font-family:'Cascadia Mono';font-style:normal;font-weight:700;font-display:swap;src:url('fonts/cascadia-mono-700.woff2') format('woff2')}
 
@@ -130,7 +129,7 @@ body.bot-render .legend{display:none!important}
 .grid.p .head.day{flex-direction:row;gap:.06em}    /* portrait: days are wide cols → Fr19 on one line */
 .grid.l .head.day{flex-direction:column;gap:0}      /* landscape: days are tall rows → Fr over 19 */
 .head.day .dow{color:var(--ink)}
-.head.day .dnum{color:var(--muted);font-weight:500}
+.head.day .dnum{color:var(--muted);font-weight:400}
 .head.today .dow,.head.today .dnum{color:#ffd23f}
 .head.hour{font-variant-numeric:tabular-nums;letter-spacing:-.02em;white-space:nowrap;font-size:var(--hourfs,clamp(8px,1.7vmin,13px))}
 

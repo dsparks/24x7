@@ -159,9 +159,27 @@
     return style.display !== 'inline' && parseFloat(style.fontSize) >= 7;
   }
 
+  let screenshotRendererPromise = null;
+  function ensureScreenshotRenderer(){
+    if (window.html2canvas) return Promise.resolve();
+    if (screenshotRendererPromise) return screenshotRendererPromise;
+    screenshotRendererPromise = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = new URL('html2canvas.min.js', document.baseURI).href;
+      script.async = true;
+      script.onload = () => window.html2canvas ? resolve() : reject(new Error('Screenshot renderer unavailable'));
+      script.onerror = () => reject(new Error('Could not load screenshot renderer'));
+      document.head.appendChild(script);
+    }).catch(err => {
+      screenshotRendererPromise = null;
+      throw err;
+    });
+    return screenshotRendererPromise;
+  }
+
   async function captureGridSnapshot(grid, overlays, label, snapshotClass, beforeCapture, afterCapture){
     if (!gridReadyForSnapshot(grid)) throw new Error('The grid is not ready yet');
-    if (!window.html2canvas) throw new Error('Screenshot renderer unavailable');
+    await ensureScreenshotRenderer();
     try {
       if (typeof beforeCapture === 'function') await beforeCapture();
       await document.fonts?.ready;
@@ -255,7 +273,7 @@
       refreshing = true;
       location.reload();
     });
-    window.addEventListener('load', () => {
+    const register = () => {
       navigator.serviceWorker.register(script, { updateViaCache: 'none' })
         .then(reg => {
           reg.update().catch(() => {});
@@ -271,6 +289,14 @@
           });
         })
         .catch(() => {});
+    };
+    window.addEventListener('load', () => {
+      // Keep first paint, forecast fetches, and initial animation setup clear of
+      // service-worker installation and app-shell prefetch work.
+      setTimeout(() => {
+        if ('requestIdleCallback' in window) requestIdleCallback(register, { timeout: 3000 });
+        else register();
+      }, 1500);
     });
   }
 

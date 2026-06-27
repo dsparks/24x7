@@ -437,8 +437,14 @@ function buildUrl(lat, lon){
   return `https://api.open-meteo.com/v1/forecast?${p}`;
 }
 
-async function fetchForecast(lat, lon){
-  return AppCore.fetchJson(buildUrl(lat, lon), { label: 'Weather', timeoutMs: 15000 });
+const forecastRequests = new Map();
+function fetchForecast(lat, lon){
+  const key = `${(+lat).toFixed(3)},${(+lon).toFixed(3)}`;
+  if (forecastRequests.has(key)) return forecastRequests.get(key);
+  const request = AppCore.fetchJson(buildUrl(lat, lon), { label: 'Weather', timeoutMs: 15000 })
+    .finally(() => forecastRequests.delete(key));
+  forecastRequests.set(key, request);
+  return request;
 }
 
 /* Parse Open-Meteo hourly arrays into day columns of 24 hours each. */
@@ -1460,26 +1466,17 @@ makeDraggablePopup('tip', tipEl, () => {
 
 /* ---------- Settings sheet ---------- */
 let shareFile = null, shareRevision = 0, shareBuiltRevision = -1;
-let sharePreparing = false, shareTimer = 0;
+let sharePreparing = false;
 function setShareButtonReady(ready){
   const button = $('#shareView');
   button.disabled = !ready;
 }
-function scheduleSharePrepare(delay = 150){
-  clearTimeout(shareTimer);
-  if (!currentForecastMeta || gridEl.classList.contains('loading')) return;
-  shareTimer = setTimeout(() => {
-    const start = () => prepareShare();
-    if ('requestIdleCallback' in window) requestIdleCallback(start, { timeout: 500 });
-    else start();
-  }, delay);
-}
-function invalidateShare(delay = 150){
+function invalidateShare(){
   shareRevision++;
   shareFile = null;
   shareBuiltRevision = -1;
   setShareButtonReady(false);
-  scheduleSharePrepare(delay);
+  if (!sheetEl.hidden) setTimeout(() => { if (!sheetEl.hidden) prepareShare(); }, 0);
 }
 async function prepareShare(){
   if (!currentForecastMeta || gridEl.classList.contains('loading')){
@@ -1511,7 +1508,9 @@ async function prepareShare(){
     console.warn(err);
   } finally {
     sharePreparing = false;
-    if (revision !== shareRevision) scheduleSharePrepare(100);
+    if (revision !== shareRevision && !sheetEl.hidden){
+      setTimeout(() => { if (!sheetEl.hidden) prepareShare(); }, 0);
+    }
   }
 }
 function openSheet(){
@@ -2165,7 +2164,7 @@ async function load(lat, lon){
   } finally {
     if (seq === loadSeq){
       gridEl.classList.remove('loading');
-      invalidateShare(100);
+      invalidateShare();
     }
   }
 }
