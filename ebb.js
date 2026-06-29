@@ -327,7 +327,7 @@ function enrichMoon(days, offset){
 }
 
 /* ---------- Load orchestration ---------- */
-let days = [], orientation = 'p', loadSeq = 0, lastCoords = null, testMode = false, currentForecastMeta = null;
+let days = [], orientation = 'p', loadSeq = 0, lastCoords = null, lastLoadedAt = 0, testMode = false, currentForecastMeta = null;
 let myCoords = null, myPlace = null;
 const fcCache = new Map();
 const forecastRequests = new Map();
@@ -424,6 +424,7 @@ async function load(lat, lon){
     const fc = await fetchForecast(lat, lon);
     if (seq !== loadSeq) return;
     const fetchedAt = Date.now();
+    lastLoadedAt = fetchedAt;
     writeCache(lat, lon, fc, fetchedAt);
     cacheForecast(lat, lon, fc, fetchedAt);
     applyForecast(fc, lat, lon, fetchedAt);
@@ -1448,7 +1449,15 @@ function startFx(){
   if (reduceMotion.matches){ fx.t = 0; drawFxStill(); return; }
   fx.last = performance.now(); fx.raf = requestAnimationFrame(frame);
 }
-document.addEventListener('visibilitychange', () => { if (document.hidden){ cancelAnimationFrame(fx.raf); fx.raf = 0; } else startFx(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden){
+    cancelAnimationFrame(fx.raf);
+    fx.raf = 0;
+    return;
+  }
+  startFx();
+  if (lastCoords && Date.now() - lastLoadedAt > 10 * 60 * 1000) load(lastCoords.lat, lastCoords.lon);
+});
 
 /* ---------- Movable popups: drag to reposition; double-tap or long-press to reset ---------- */
 function clampPopupPoint(el, x, y){
@@ -1931,6 +1940,12 @@ const TEST_QUERIES = ['!test', '!demo'];
 const isTestQuery = q => TEST_QUERIES.includes(q.trim().toLowerCase());
 const searchBox = $('#searchBox'), searchInput = $('#searchInput'), searchClear = $('#searchClear'), resultsEl = $('#searchResults');
 let searchSeq = 0, searchAbort = null, searchTimer = 0, hits = [], activeIdx = -1;
+function cancelSearch(){
+  ++searchSeq;
+  clearTimeout(searchTimer);
+  searchAbort?.abort();
+  searchAbort = null;
+}
 const escHtml = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const flagOf = cc => (cc && cc.length === 2) ? String.fromCodePoint(...[...cc.toUpperCase()].map(c => 0x1F1E6 + c.charCodeAt(0) - 65)) : '📍';
 function hl(name, q){ const i = name.toLowerCase().indexOf(q.toLowerCase()); return i < 0 ? escHtml(name) : escHtml(name.slice(0, i)) + '<b>' + escHtml(name.slice(i, i + q.length)) + '</b>' + escHtml(name.slice(i + q.length)); }
@@ -1963,14 +1978,14 @@ function renderHits(items, q){
 }
 function setActive(i){ const rows = resultsEl.querySelectorAll('.result'); if (!rows.length) return; activeIdx = (i + rows.length) % rows.length; rows.forEach((el, j) => el.setAttribute('aria-selected', j === activeIdx ? 'true' : 'false')); rows[activeIdx].scrollIntoView({ block: 'nearest' }); searchInput.setAttribute('aria-activedescendant', rows[activeIdx].id); }
 function choose(i){ const r = hits[i]; if (!r) return; addPlace(r); resetSearch(); }
-function resetSearch(){ searchInput.value = ''; searchClear.hidden = true; closeResults(); }
+function resetSearch(){ cancelSearch(); searchInput.value = ''; searchClear.hidden = true; closeResults(); }
 async function runSearch(q){
   const seq = ++searchSeq; searchAbort?.abort(); searchAbort = new AbortController(); showMsg('Searching…');
   try { const res = await geocode(q, searchAbort.signal); if (seq !== searchSeq) return; if (!res.length) return showMsg('No matches'); renderHits(rankHits(res, q, lastCoords), q); }
   catch (err){ if (err.name === 'AbortError' || seq !== searchSeq) return; showMsg('Search error — try again'); }
 }
 searchInput.addEventListener('input', () => {
-  const q = searchInput.value.trim(); searchClear.hidden = !searchInput.value; clearTimeout(searchTimer);
+  const q = searchInput.value.trim(); searchClear.hidden = !searchInput.value; cancelSearch();
   if (isTestQuery(q)){ openResults(); resultsEl.innerHTML = `<li class="result" id="sr-0" role="option"><span class="r-flag">🎣</span><span class="r-text"><span class="r-name">Add test conditions</span><span class="r-sub">a simulated week</span></span></li>`; resultsEl.querySelector('.result').addEventListener('pointerdown', e => { e.preventDefault(); resetSearch(); addTestPlace(); }); return; }
   if (q.length < 2){ closeResults(); return; }
   searchTimer = setTimeout(() => runSearch(q), 220);
@@ -1984,13 +1999,22 @@ searchInput.addEventListener('keydown', e => {
 });
 searchClear.addEventListener('click', () => { resetSearch(); searchInput.focus(); });
 searchInput.addEventListener('blur', () => setTimeout(closeResults, 120));
+searchInput.addEventListener('focus', () => {
+  if (hits.length) openResults();
+  else if (searchInput.value.trim().length >= 2) searchInput.dispatchEvent(new Event('input'));
+});
 
 function addTestPlace(){ testForecastCache = null; let i = settings.places.findIndex(p => p.test); if (i < 0) i = settings.places.push({ name: '🎣 Test conditions', test: true }) - 1; switchTo(i); }
 
 /* ---------- Geolocation ---------- */
 function locate(intent = ++locationIntent){
   if (!('geolocation' in navigator)){
-    if (intent === locationIntent) setPlace('Location unavailable', 'Search in settings');
+    if (intent === locationIntent){
+      setPlace('Location unavailable', 'Search in settings');
+      gridEl.classList.remove('loading');
+      $('#updatedAt').textContent = 'Choose a location';
+      setTideSrc('Choose a location in settings');
+    }
     return;
   }
   navigator.geolocation.getCurrentPosition(
@@ -2001,7 +2025,13 @@ function locate(intent = ++locationIntent){
       load(myCoords.lat, myCoords.lon);
       reverseName(myCoords.lat, myCoords.lon, intent).then(p => { if (p) myPlace = p; });
     },
-    () => { if (intent === locationIntent) setPlace('Location blocked', 'Search in settings ⚙'); },
+    () => {
+      if (intent !== locationIntent) return;
+      setPlace('Location blocked', 'Search in settings ⚙');
+      gridEl.classList.remove('loading');
+      $('#updatedAt').textContent = 'Choose a location';
+      setTideSrc('Choose a location in settings');
+    },
     { enableHighAccuracy: false, timeout: 12000, maximumAge: 600000 }
   );
 }
@@ -2050,6 +2080,13 @@ function genTestForecast(){
 
 /* ---------- Resize ---------- */
 let rT; addEventListener('resize', () => { clearTimeout(rT); rT = setTimeout(() => { (isPortrait() ? 'p' : 'l') !== orientation ? render() : layoutFx(); }, 120); });
+
+// Refresh only while visible; visibilitychange catches up after a sleeping PWA resumes.
+setInterval(() => {
+  if (!document.hidden && lastCoords && Date.now() - lastLoadedAt >= 15 * 60 * 1000){
+    load(lastCoords.lat, lastCoords.lon);
+  }
+}, 15 * 60 * 1000);
 
 /* ---------- Service worker (offline / installable PWA) ---------- */
 AppCore.registerFreshServiceWorker('sw.js');

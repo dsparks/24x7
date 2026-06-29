@@ -1973,6 +1973,13 @@ let searchTimer = 0;
 let hits = [];              // current result objects
 let activeIdx = -1;         // keyboard-highlighted row
 
+function cancelSearch(){
+  ++searchSeq;
+  clearTimeout(searchTimer);
+  searchAbort?.abort();
+  searchAbort = null;
+}
+
 const escHtml = s => String(s).replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
 const flagOf = cc => (cc && cc.length === 2)
   ? String.fromCodePoint(...[...cc.toUpperCase()].map(c => 0x1F1E6 + c.charCodeAt(0) - 65))
@@ -2018,7 +2025,7 @@ function choose(i){
   const r = hits[i]; if (!r) return;
   addPlace(r); resetSearch();
 }
-function resetSearch(){ searchInput.value = ''; searchClear.hidden = true; closeResults(); }
+function resetSearch(){ cancelSearch(); searchInput.value = ''; searchClear.hidden = true; closeResults(); }
 
 /* Soft re-ranking of geocoder hits. All weights are ADDITIVE nudges on top of the
    API's own relevance order — nothing is filtered out, things just surface sooner.
@@ -2075,7 +2082,7 @@ async function runSearch(q){
 searchInput.addEventListener('input', () => {
   const q = searchInput.value.trim();
   searchClear.hidden = !searchInput.value;
-  clearTimeout(searchTimer);
+  cancelSearch();
   if (isTestQuery(q)){                              // surface the hidden test location as a pickable row
     hits = []; activeIdx = -1; openResults();
     resultsEl.innerHTML = `<li class="result" id="sr-0" role="option"><span class="r-flag">🎲</span><span class="r-text"><span class="r-name">Add test weather</span><span class="r-sub">a randomly generated week</span></span></li>`;
@@ -2100,11 +2107,18 @@ searchInput.addEventListener('keydown', e => {
 });
 searchClear.addEventListener('click', () => { resetSearch(); searchInput.focus(); });
 searchInput.addEventListener('blur', () => setTimeout(closeResults, 120));   // let a row's pointerdown land first
-searchInput.addEventListener('focus', () => { if (hits.length || searchInput.value.trim().length >= 2) openResults(); });
+searchInput.addEventListener('focus', () => {
+  if (hits.length) openResults();
+  else if (searchInput.value.trim().length >= 2) searchInput.dispatchEvent(new Event('input'));
+});
 
 function locate(intent = ++locationIntent){
   if (!('geolocation' in navigator)){
-    if (intent === locationIntent) setPlace('Location unavailable', 'Search in settings');
+    if (intent === locationIntent){
+      setPlace('Location unavailable', 'Search in settings');
+      gridEl.classList.remove('loading');
+      $('#updatedAt').textContent = 'Choose a location';
+    }
     return;
   }
   navigator.geolocation.getCurrentPosition(
@@ -2115,7 +2129,12 @@ function locate(intent = ++locationIntent){
       load(myCoords.lat, myCoords.lon);
       reverseName(myCoords.lat, myCoords.lon, intent).then(p => { if (p) myPlace = p; });
     },
-    () => { if (intent === locationIntent) setPlace('Location blocked', 'Search in settings ⚙'); },
+    () => {
+      if (intent !== locationIntent) return;
+      setPlace('Location blocked', 'Search in settings ⚙');
+      gridEl.classList.remove('loading');
+      $('#updatedAt').textContent = 'Choose a location';
+    },
     { enableHighAccuracy: false, timeout: 12000, maximumAge: 600000 }
   );
 }
