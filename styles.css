@@ -105,6 +105,7 @@ body.bot-render .legend{display:none!important}
 .corner{
   display:flex;align-items:center;justify-content:center;
   background:var(--bg);color:var(--muted);
+  appearance:none;padding:0;border-left:0;border-top:0;font:inherit;
   cursor:pointer;
   position:relative;
   z-index:5;                 /* lift the enlarged hit area above neighbouring header cells */

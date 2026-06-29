@@ -38,7 +38,7 @@ body{
 
 .corner{
   display:flex;align-items:center;justify-content:center;
-  background:var(--bg);color:var(--muted);cursor:pointer;position:relative;z-index:5;
+  background:var(--bg);color:var(--muted);appearance:none;padding:0;border-left:0;border-top:0;font:inherit;cursor:pointer;position:relative;z-index:5;
 }
 .corner::before{content:"";position:absolute;top:-8px;left:-8px;right:-22px;bottom:-22px}
 .corner svg{width:60%;height:60%;max-width:26px;max-height:26px;opacity:.85}

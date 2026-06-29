@@ -87,7 +87,7 @@ function loadSettings(){
   if (s.activeIdx != null && !(s.activeIdx >= 0 && s.activeIdx < s.places.length)) s.activeIdx = null;
   return s;
 }
-function saveSettings(){ localStorage.setItem(LS.settings, JSON.stringify(settings)); }
+function saveSettings(){ try { localStorage.setItem(LS.settings, JSON.stringify(settings)); } catch {} }
 
 function precipLevel(cell){ const k = precipKind(cell); return k ? k.level : 0; }
 function curveScore(dim, curve, v){
@@ -609,10 +609,12 @@ function placeSunMarkers(di){
 }
 
 function corner(){
-  const el = document.createElement('div');
+  const el = document.createElement('button');
+  el.type = 'button';
   el.className = 'corner';
   el.innerHTML = GEAR;
   el.title = 'Settings';
+  el.setAttribute('aria-label', 'Settings');
   el.addEventListener('click', openSheet);
   return el;
 }
@@ -1376,8 +1378,24 @@ gridEl.addEventListener('pointermove', e => {
 function endDrag(e){
   clearTimeout(lpTimer);
   try { gridEl.releasePointerCapture(e.pointerId); } catch {}
-  if (!dragAxis) return;
+  if (!dragAxis){
+    // Resolve the cell at release time. A tap can begin while slideCommit() is
+    // replacing the old grid, in which case browsers commonly discard `click`
+    // because its pointerdown target no longer exists.
+    if (!lpFired){
+      const c = document.elementFromPoint(e.clientX, e.clientY)?.closest('.cell');
+      if (c && gridEl.contains(c) && !c.classList.contains('empty')){
+        suppressTipGridClickUntil = performance.now() + 350;
+        showTip(+c.dataset.di, +c.dataset.h, c);
+      }
+    }
+    return;
+  }
   if (!swiped){ resetSlide(); return; }
+  // A drag's synthetic click (when the browser emits one) fires before the next
+  // task. Clear the guard afterward too, so browsers that suppress that click do
+  // not make the user's next real tap pay for the preceding swipe.
+  setTimeout(() => { swiped = false; }, 0);
   const axis = dragAxis, off = dragOff;
   if (canSwipe(axis) && Math.abs(off) > Math.min(90, dragSize * 0.22)){
     slideCommit(axis, off < 0 ? -1 : 1);
@@ -1793,6 +1811,9 @@ async function geocode(q, signal){
   return j.results || [];
 }
 /* ---------- Saved locations ---------- */
+// Monotonic intent token: late GPS/geocoder callbacks may cache their result, but
+// only the location the user most recently chose is allowed to change the UI.
+let locationIntent = 0;
 function placeItem(name, active, onSelect, onDelete){
   const row = document.createElement('div');
   row.className = 'place-item' + (active ? ' on' : '');
@@ -1828,6 +1849,7 @@ function renderPlaceList(){
     )));
 }
 function switchTo(idx){
+  const intent = ++locationIntent;
   settings.activeIdx = idx;
   saveSettings();
   renderPlaceList();
@@ -1838,9 +1860,9 @@ function switchTo(idx){
     testActive = false;
     setPlace(myPlace?.name || 'Current location', myPlace?.sub || '');      // show the cached name immediately
     load(myCoords.lat, myCoords.lon);
-    reverseName(myCoords.lat, myCoords.lon).then(p => { if (p) myPlace = p; });
+    reverseName(myCoords.lat, myCoords.lon, intent).then(p => { if (p) myPlace = p; });
   }
-  else { testActive = false; setPlace('Locating…', ''); locate(); }
+  else { testActive = false; setPlace('Locating…', ''); locate(intent); }
 }
 function removePlace(i){
   const wasActive = settings.activeIdx === i;
@@ -1931,6 +1953,7 @@ function generateTestForecast(){
   return { hourly, daily };
 }
 function loadTest(){
+  ++loadSeq;                                // invalidate any older real forecast still in flight
   testActive = true; lastCoords = null;     // skip cache writes & auto-refresh for synthetic data
   setPlace('Test weather', 'randomized — re-tap to re-roll');
   applyForecast(testForecast(), Date.now());   // reuse the cached week so swipe-in matches the ghost & is instant
@@ -2079,16 +2102,20 @@ searchClear.addEventListener('click', () => { resetSearch(); searchInput.focus()
 searchInput.addEventListener('blur', () => setTimeout(closeResults, 120));   // let a row's pointerdown land first
 searchInput.addEventListener('focus', () => { if (hits.length || searchInput.value.trim().length >= 2) openResults(); });
 
-function locate(){
-  if (!('geolocation' in navigator)){ setPlace('Location unavailable', 'Search in settings'); return; }
+function locate(intent = ++locationIntent){
+  if (!('geolocation' in navigator)){
+    if (intent === locationIntent) setPlace('Location unavailable', 'Search in settings');
+    return;
+  }
   navigator.geolocation.getCurrentPosition(
     pos => {
+      if (intent !== locationIntent) return;
       myCoords = { lat: pos.coords.latitude, lon: pos.coords.longitude };
       setPlace(myPlace?.name || 'Current location', myPlace?.sub || '');   // instant if we've named it before
       load(myCoords.lat, myCoords.lon);
-      reverseName(myCoords.lat, myCoords.lon).then(p => { if (p) myPlace = p; });
+      reverseName(myCoords.lat, myCoords.lon, intent).then(p => { if (p) myPlace = p; });
     },
-    () => setPlace('Location blocked', 'Search in settings ⚙'),
+    () => { if (intent === locationIntent) setPlace('Location blocked', 'Search in settings ⚙'); },
     { enableHighAccuracy: false, timeout: 12000, maximumAge: 600000 }
   );
 }
@@ -2103,8 +2130,9 @@ async function lookupName(lat, lon){             // reverse-geocode → { name, 
     return name ? { name, sub } : null;
   } catch { return null; /* name is cosmetic; ignore */ }
 }
-async function reverseName(lat, lon){            // …and reflect it in the header
+async function reverseName(lat, lon, intent = locationIntent){  // …and reflect it in the header
   const p = await lookupName(lat, lon);
+  if (intent !== locationIntent) return null;
   if (p) setPlace(p.name, p.sub);
   return p;
 }
@@ -2237,21 +2265,24 @@ function boot(){
   // 2) URL deep-link wins: ?lat=&lon= or ?q=city (handy for sharing & headless testing).
   const qlat = parseFloat(PAGE_PARAMS.get('lat')), qlon = parseFloat(PAGE_PARAMS.get('lon')), qq = PAGE_PARAMS.get('q');
   if (Number.isFinite(qlat) && Number.isFinite(qlon)){
+    const intent = ++locationIntent;
     if (cacheMatches(cache, qlat, qlon)) applyForecast(cache.json, cache.t, 'cached'); else showLoadingScaffold();
     setPlace(BOT_LABEL || 'Pinned location', `${qlat.toFixed(2)}, ${qlon.toFixed(2)}`);
     load(qlat, qlon);
-    if (!BOT_LABEL) reverseName(qlat, qlon);
+    if (!BOT_LABEL) reverseName(qlat, qlon, intent);
     return;
   }
   if (qq){
+    const intent = ++locationIntent;
     if (isTestQuery(qq)){ loadTest(); return; }
     showLoadingScaffold();
     setPlace('Locating…', '');
     geocode(qq).then(res => {
+      if (intent !== locationIntent) return;
       const r = res[0];
       if (r){ setPlace(r.name, [r.admin1, r.country_code].filter(Boolean).join(', ')); load(r.latitude, r.longitude); }
-      else locate();
-    }).catch(locate);
+      else locate(intent);
+    }).catch(() => { if (intent === locationIntent) locate(intent); });
     return;
   }
 
@@ -2300,7 +2331,7 @@ function refreshMyCoords(){
     if (!moved) return;
     if (settings.activeIdx == null && !testActive){
       load(lat, lon);                                                        // viewing it now → update grid + header
-      reverseName(lat, lon).then(p => { if (p) myPlace = p; });
+      reverseName(lat, lon, locationIntent).then(p => { if (p) myPlace = p; });
     } else {
       fetchForecast(lat, lon).then(j => cacheForecast(lat, lon, j)).catch(() => {});   // keep forecast warm
       lookupName(lat, lon).then(p => { if (p) myPlace = p; });               // refresh cached name, no UI change

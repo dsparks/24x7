@@ -452,6 +452,7 @@ async function load(lat, lon){
 let testForecastCache = null;
 function testForecast(){ return testForecastCache || (testForecastCache = genTestForecast()); }
 function loadTest(){
+  ++loadSeq;                                // invalidate any older real forecast still in flight
   testMode = true;
   applyForecast(testForecast(), 41.5, -71.3, Date.now());
   applySimulatedTides(-71.3, 'Tide: simulated (test)');
@@ -475,8 +476,8 @@ function placeholderDays(){
 /* ---------- Grid render ---------- */
 const gridEl = $('#grid');
 function corner(){
-  const el = document.createElement('div');
-  el.className = 'corner'; el.setAttribute('role', 'button'); el.setAttribute('aria-label', 'Settings');
+  const el = document.createElement('button');
+  el.type = 'button'; el.className = 'corner'; el.setAttribute('aria-label', 'Settings');
   el.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1.1l2-1.6-2-3.5-2.4 1a7 7 0 0 0-1.9-1.1l-.4-2.6h-4l-.4 2.6a7 7 0 0 0-1.9 1.1l-2.4-1-2 3.5 2 1.6A7 7 0 0 0 5 12a7 7 0 0 0 .1 1.1l-2 1.6 2 3.5 2.4-1a7 7 0 0 0 1.9 1.1l.4 2.6h4l.4-2.6a7 7 0 0 0 1.9-1.1l2.4 1 2-3.5-2-1.6A7 7 0 0 0 19 12z"/></svg>`;
   el.addEventListener('click', openSheet);
   return el;
@@ -530,7 +531,7 @@ function fitHeaders(){
 }
 
 /* ---------- Cutaway canvas: water + chop + precip + stars ---------- */
-const fx = { cells: [], canvas: null, ctx: null, dpr: 1, w: 0, h: 0, raf: 0, last: 0, t: 0, delights: [], delightStarted: false, delightTimer: 0 };
+const fx = { cells: [], seams: [], canvas: null, ctx: null, dpr: 1, w: 0, h: 0, raf: 0, last: 0, t: 0, delights: [], delightStarted: false, delightTimer: 0 };
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
 function resetDelight(){
   clearTimeout(fx.delightTimer);
@@ -590,6 +591,18 @@ function layoutFx(){
     const fc = { di: +el.dataset.di, h: +el.dataset.h, cell: c, x: r.left - g.left, y: r.top - g.top, w: Math.max(1, r.width - bw), hgt: Math.max(1, r.height - bh) };
     buildCellFx(fc); fx.cells.push(fc);
   });
+  fx.seams = [];
+  for (let di = 0; di < days.length; di++){
+    const row = fx.cells.filter(c => c.di === di);
+    for (let i = 0; i < row.length - 1; i++){
+      const a = row[i], b = row[i + 1];
+      fx.seams.push({
+        x: (a.x + a.w + b.x) / 2,
+        y: Math.min(waterTopOf(a), waterTopOf(b)) - 1,
+        bottom: Math.max(a.y + a.hgt, b.y + b.hgt),
+      });
+    }
+  }
   scheduleDelight();
   startFx();
 }
@@ -665,16 +678,7 @@ function drawWaterSeams(){
   const ctx = fx.ctx;
   ctx.save();
   ctx.fillStyle = '#000';
-  const rows = [...new Set(fx.cells.map(c => c.di))].map(di => rowCells(di));
-  for (const row of rows){
-    for (let i = 0; i < row.length - 1; i++){
-      const a = row[i], b = row[i + 1];
-      const x = (a.x + a.w + b.x) / 2;
-      const y = Math.min(waterTopOf(a), waterTopOf(b)) - 1;
-      const bottom = Math.max(a.y + a.hgt, b.y + b.hgt);
-      ctx.fillRect(x - 1, y, 2, bottom - y);
-    }
-  }
+  for (const seam of fx.seams) ctx.fillRect(seam.x - 1, seam.y, 2, seam.bottom - seam.y);
   ctx.restore();
 }
 
@@ -797,32 +801,35 @@ function drawWaterV2(fc, waterTop){
   const sharp = 0.5 + wf * 0.45;                                    // crest pointiness
   // Precompute the surface once: sharpened trochoid (pointy crests, flat troughs)
   // plus a cross-wave. sin(kx − ωt) ⇒ crests travel toward +x (right) when roll>0.
-  const step = 3, pts = [];
-  for (let x = 0; x <= w; x += step){
+  const step = 3;
+  const pointCount = Math.ceil(w / step) + 1;
+  if (!fc.wavePoints || fc.wavePoints.length !== pointCount * 2) fc.wavePoints = new Float32Array(pointCount * 2);
+  const pts = fc.wavePoints;
+  for (let i = 0; i < pointCount; i++){
+    const x = Math.min(w, i * step);
     const s = Math.sin(k * x - travel);
     const peaked = Math.sign(s) * Math.pow(Math.abs(s), 1 / (1 + sharp));
-    pts.push({ x, y: waterTop + amp * (peaked * 0.82 + 0.3 * Math.sin(2.4 * k * x + bob)) });
-  }
-  if (pts[pts.length - 1]?.x < w){
-    const s = Math.sin(k * w - travel);
-    const peaked = Math.sign(s) * Math.pow(Math.abs(s), 1 / (1 + sharp));
-    pts.push({ x: w, y: waterTop + amp * (peaked * 0.82 + 0.3 * Math.sin(2.4 * k * w + bob)) });
+    pts[i * 2] = x;
+    pts[i * 2 + 1] = waterTop + amp * (peaked * 0.82 + 0.3 * Math.sin(2.4 * k * x + bob));
   }
   ctx.beginPath(); ctx.moveTo(left, bottom);
-  pts.forEach(p => ctx.lineTo(left + p.x, p.y));
+  for (let i = 0; i < pointCount; i++) ctx.lineTo(left + pts[i * 2], pts[i * 2 + 1]);
   ctx.lineTo(left + w, bottom); ctx.closePath();
   ctx.fillStyle = '#000'; ctx.fill();
   // crest line, brighter as wind builds
   ctx.beginPath();
-  pts.forEach((p, i) => i === 0 ? ctx.moveTo(left, p.y) : ctx.lineTo(left + p.x, p.y));
+  for (let i = 0; i < pointCount; i++){
+    const x = pts[i * 2], y = pts[i * 2 + 1];
+    i === 0 ? ctx.moveTo(left, y) : ctx.lineTo(left + x, y);
+  }
   ctx.strokeStyle = `rgba(150,190,225,${(0.16 + wf * 0.22).toFixed(3)})`;
   ctx.lineWidth = 1; ctx.stroke();
   // whitecaps + downwind spray on the crests, scaling with wind (none when calm)
   if (wf > 0.2){
     const fa = clamp((wf - 0.2) * 1.4, 0, 1);
-    for (let i = 1; i < pts.length - 1; i++){
-      const { x, y } = pts[i];
-      if (y < pts[i - 1].y && y <= pts[i + 1].y){                    // local crest peak (smaller y = higher)
+    for (let i = 1; i < pointCount - 1; i++){
+      const x = pts[i * 2], y = pts[i * 2 + 1];
+      if (y < pts[(i - 1) * 2 + 1] && y <= pts[(i + 1) * 2 + 1]){    // local crest peak (smaller y = higher)
         const fw = 2 + wf * 3;
         ctx.fillStyle = `rgba(228,242,255,${(0.5 * fa).toFixed(3)})`;
         ctx.fillRect(roll > 0 ? left + x - 1 : left + x + 1 - fw, y - 0.6, fw, 1.4);   // foam streaks toward the blow
@@ -839,6 +846,154 @@ function drawWaterV2(fc, waterTop){
       }
     }
   }
+}
+
+// Seven underwater wind-texture auditions, one per day row. Each treatment uses
+// the same normalized wind energy so the comparison is about visual language,
+// not different thresholds. Keep the mark counts low: this runs for every cell.
+const WATER_TEXTURES = [
+  'Layered streaks',
+  'Layered streaks',
+  'Layered streaks',
+  'Layered streaks',
+  'Layered streaks',
+  'Layered streaks',
+  'Layered streaks',
+];
+// Selected: brighter Layered Streaks (8). Finalists retained below for an easy
+// return: Caustic Ribbons (3) and Speed Dashes (6).
+const WATER_TEXTURE_VARIANTS = [8, 8, 8, 8, 8, 8, 8];
+function drawWindTexture(fc, waterTop, bottom, wf, roll, t){
+  const { ctx } = fx, left = fc.x, w = fc.w, h = fc.hgt;
+  const waterH = bottom - waterTop;
+  if (waterH < 3) return;
+  const energy = wf * wf;                         // calm stays truly quiet
+  const alpha = 0.04 + energy * 0.23;
+  const phase = t * (0.45 + wf * 2.1) * roll + fc.h * 0.73;
+  const row = ((fc.di % WATER_TEXTURE_VARIANTS.length) + WATER_TEXTURE_VARIANTS.length) % WATER_TEXTURE_VARIANTS.length;
+  const variant = WATER_TEXTURE_VARIANTS[row];
+  ctx.save();
+  ctx.beginPath(); ctx.rect(left, waterTop + 1, w, Math.max(0, waterH - 1)); ctx.clip();
+  ctx.lineCap = 'round';
+
+  if (variant === 0){                              // long, gently rolling layers
+    for (let j = 0; j < 3; j++){
+      const yy = waterTop + waterH * (0.18 + j * 0.24);
+      ctx.beginPath();
+      for (let x = -2; x <= w + 2; x += 5){
+        const y = yy + Math.sin(x * 0.18 + phase * (0.7 + j * 0.22) + j) * (0.35 + energy * 1.5);
+        x > -2 ? ctx.lineTo(left + x, y) : ctx.moveTo(left + x, y);
+      }
+      ctx.strokeStyle = `rgba(185,215,233,${(alpha * (1 - j * 0.2)).toFixed(3)})`;
+      ctx.lineWidth = 0.75; ctx.stroke();
+    }
+  } else if (variant === 1){                       // two currents repeatedly braid and separate
+    ctx.strokeStyle = `rgba(195,222,239,${alpha.toFixed(3)})`;
+    ctx.lineWidth = 0.85;
+    const mid = waterTop + waterH * 0.48;
+    const spread = 0.8 + energy * Math.min(3.2, waterH * 0.16);
+    for (let j = 0; j < 2; j++){
+      ctx.beginPath();
+      for (let x = -2; x <= w + 2; x += 3){
+        const weave = Math.sin(x * (0.32 + energy * 0.16) - phase * 1.2) * spread;
+        const y = mid + (j ? -weave : weave);
+        x > -2 ? ctx.lineTo(left + x, y) : ctx.moveTo(left + x, y);
+      }
+      ctx.stroke();
+    }
+  } else if (variant === 2){                       // gusts register as stretched pulse rings
+    ctx.strokeStyle = `rgba(215,235,247,${(alpha * 1.08).toFixed(3)})`;
+    ctx.lineWidth = 0.8;
+    for (let j = 0; j < 2; j++){
+      const pulse = ((t * (0.24 + wf * 0.42) + fc.h * 0.19 + j * 0.5) % 1 + 1) % 1;
+      const cx = left + w * (roll > 0 ? 0.25 : 0.75);
+      const cy = waterTop + waterH * (0.34 + j * 0.24);
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.scale(1.2 + energy * 1.8, 0.58 + energy * 0.2);
+      ctx.beginPath(); ctx.arc(0, 0, 1.2 + pulse * (2.2 + energy * 3.8), 0, 6.2832); ctx.stroke();
+      ctx.restore();
+    }
+  } else if (variant === 3){                       // wavering light ribbons / caustics
+    for (let j = 0; j < 2; j++){
+      ctx.beginPath();
+      for (let x = -2; x <= w + 2; x += 3){
+        const y = waterTop + waterH * (0.27 + j * 0.36)
+          + Math.sin(x * 0.34 + phase * (1.1 + j * 0.35)) * (0.7 + energy * 2.2);
+        x > -2 ? ctx.lineTo(left + x, y) : ctx.moveTo(left + x, y);
+      }
+      ctx.strokeStyle = `rgba(205,232,247,${(alpha * 1.15).toFixed(3)})`;
+      ctx.lineWidth = 0.9 + energy * 0.7; ctx.stroke();
+    }
+  } else if (variant === 4){                       // moving surface crests cast pale vertical curtains
+    const count = 1 + Math.round(energy * 2);
+    for (let j = 0; j < count; j++){
+      const x = left + (((j / count) * w + phase * roll * 2.4) % (w + 5) + w + 5) % (w + 5) - 2;
+      const beamW = 1.1 + energy * 2.3;
+      const beam = ctx.createLinearGradient(x, waterTop, x, bottom);
+      beam.addColorStop(0, `rgba(210,232,245,${(alpha * 1.15).toFixed(3)})`);
+      beam.addColorStop(1, 'rgba(165,195,215,0)');
+      ctx.fillStyle = beam;
+      ctx.beginPath();
+      ctx.moveTo(x - beamW, waterTop);
+      ctx.lineTo(x + beamW, waterTop);
+      ctx.lineTo(x + beamW * 0.28, bottom);
+      ctx.lineTo(x - beamW * 0.28, bottom);
+      ctx.closePath();
+      ctx.fill();
+    }
+  } else if (variant === 5){                       // little rotating eddies
+    ctx.strokeStyle = `rgba(198,225,240,${(alpha * 1.05).toFixed(3)})`;
+    ctx.lineWidth = 0.75;
+    for (let j = 0; j < 2; j++){
+      const cx = left + w * (0.28 + j * 0.48);
+      const cy = waterTop + waterH * (0.3 + j * 0.28);
+      const r = 1.5 + energy * 3 + j * 0.5;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, phase + j * 2, phase + j * 2 + Math.PI * (1.15 + energy * 0.55), roll < 0);
+      ctx.stroke();
+    }
+  } else if (variant === 6){                       // discrete directional speed marks
+    ctx.strokeStyle = `rgba(215,235,247,${(alpha * 1.2).toFixed(3)})`;
+    ctx.lineWidth = 0.85;
+    const len = 1.5 + energy * Math.max(3, w * 0.34);
+    for (let j = 0; j < 4; j++){
+      const seed = fc.h * 7 + j * 13;
+      const x = left + ((seed + phase * 4) % (w + len) + w + len) % (w + len) - len;
+      const y = waterTop + waterH * (0.16 + j * 0.2);
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + roll * len, y + roll * energy); ctx.stroke();
+    }
+  } else if (variant === 7){                       // caustics whose amplitude, light, and count all build with wind
+    const count = 1 + Math.round(wf * 4);
+    const amplitude = 0.45 + energy * Math.min(4, waterH * 0.24);
+    const ribbonAlpha = alpha * (0.72 + energy * 0.78);
+    ctx.strokeStyle = `rgba(215,237,249,${ribbonAlpha.toFixed(3)})`;
+    ctx.lineWidth = 0.75 + energy * 1.05;
+    for (let j = 0; j < count; j++){
+      const lane = (j + 1) / (count + 1);
+      ctx.beginPath();
+      for (let x = -2; x <= w + 2; x += 3){
+        const y = waterTop + waterH * lane
+          + Math.sin(x * (0.3 + wf * 0.12) - phase * (1 + j * 0.1) + j * 1.7) * amplitude;
+        x > -2 ? ctx.lineTo(left + x, y) : ctx.moveTo(left + x, y);
+      }
+      ctx.stroke();
+    }
+  } else {                                        // layered geometry, using the caustic light/amplitude encoding
+    const amplitude = 0.7 + energy * 2.2;
+    for (let j = 0; j < 3; j++){
+      const yy = waterTop + waterH * (0.18 + j * 0.24);
+      ctx.beginPath();
+      for (let x = -2; x <= w + 2; x += 5){
+        const y = yy + Math.sin(x * 0.18 + phase * (0.7 + j * 0.22) + j) * amplitude;
+        x > -2 ? ctx.lineTo(left + x, y) : ctx.moveTo(left + x, y);
+      }
+      ctx.strokeStyle = `rgba(205,232,247,${(alpha * 1.15).toFixed(3)})`;
+      ctx.lineWidth = 0.9 + energy * 0.7;
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
 }
 
 // chop 3.0 — layered, directional water: long swell carries the tide line, short
@@ -877,20 +1032,6 @@ function drawWaterV3(fc, waterTop){
   ctx.lineWidth = 1;
   ctx.stroke();
 
-  // Subtle moving streaks below the surface: not foam, just light catching black water.
-  const streakA = 0.04 + wf * 0.07;
-  for (let j = 0; j < 3; j++){
-    const yy = waterTop + h * (0.08 + j * 0.11 + 0.025 * Math.sin(t * (0.7 + j * 0.2) + fc.h));
-    if (yy > bottom - 1) continue;
-    ctx.beginPath();
-    for (let x = 0; x <= w; x += 6){
-      const y = yy + Math.sin(x * 0.14 + t * (1.1 + j * 0.35) * roll + j) * (0.5 + wf * 1.4);
-      x ? ctx.lineTo(left + x, y) : ctx.moveTo(left + x, y);
-    }
-    ctx.strokeStyle = `rgba(105,150,185,${(streakA * (1 - j * 0.22)).toFixed(3)})`;
-    ctx.lineWidth = 0.8;
-    ctx.stroke();
-  }
 
   // Foam on energetic local crests, pushed downwind into short torn streaks.
   if (wf > 0.32){
@@ -1511,7 +1652,6 @@ gridEl.addEventListener('pointerdown', e => {
   swiped = false; dragAxis = null; dragOff = 0; gX = e.clientX; gY = e.clientY;
   try { gridEl.setPointerCapture(e.pointerId); } catch {}
   dragSize = gridEl.clientWidth;
-  if (canSwipe()) buildCarousel();
 });
 gridEl.addEventListener('pointermove', e => {
   const dx = e.clientX - gX, dy = e.clientY - gY;
@@ -1521,6 +1661,7 @@ gridEl.addEventListener('pointermove', e => {
     dragAxis = 'x';
     swiped = true;
     hideTip();
+    if (canSwipe()) buildCarousel();
   }
   if (dragAxis !== 'x') return;
   let off = dx;
@@ -1530,7 +1671,20 @@ gridEl.addEventListener('pointermove', e => {
 });
 function endGridDrag(e){
   try { gridEl.releasePointerCapture(e.pointerId); } catch {}
-  if (!dragAxis){ destroyGhosts(); return; }
+  if (!dragAxis){
+    destroyGhosts();
+    // Use the live cell under the release point. During a swipe commit the grid
+    // may be replaced after pointerdown, which makes the subsequent click vanish.
+    const c = document.elementFromPoint(e.clientX, e.clientY)?.closest('.cell');
+    if (c && gridEl.contains(c) && !c.classList.contains('empty')){
+      suppressTipGridClickUntil = performance.now() + 350;
+      showTip(+c.dataset.di, +c.dataset.h, c);
+    }
+    return;
+  }
+  // Mobile browsers do not always emit a click after a drag. Keep `swiped` long
+  // enough to consume a synthetic swipe-click, then disarm it before a real tap.
+  setTimeout(() => { swiped = false; }, 0);
   if (dragAxis !== 'x') return;
   const off = dragOff;
   if (canSwipe() && Math.abs(off) > Math.min(90, dragSize * 0.22)) slideCommit(off < 0 ? -1 : 1);
@@ -1591,7 +1745,7 @@ function showTip(di, h, el){
     ? `<span class="tip-event">${c.tideMark.type === 'H' ? 'High' : 'Low'} tide · ${fmtClockMinute(h, c.tideMark.minute || 0)}</span>`
     : '';
   const facts = [
-    `Wind ${Math.round(c.windMph)}${c.windDir != null ? ' ' + compass8(c.windDir) : ''} mph`,
+    `Wind${c.windDir != null ? ' ' + compass8(c.windDir) : ''} ${Math.round(c.windMph)} mph`,
   ];
   if ((c.pop || 0) > 10 && isThunder(c)) facts.push(`${c.pop | 0}% thunderstorm`);
   else if ((c.pop || 0) > 10 && ((c.precipMm || 0) > 0 || (c.snowCm || 0) > 0)) facts.push(`${c.pop | 0}% ${c.snowCm > 0 ? 'snow' : 'rain'}`);
@@ -1734,6 +1888,8 @@ function maybeShowCoach(){
 }
 
 /* ---------- Saved locations ---------- */
+// Prevent late GPS/reverse-geocoder callbacks from replacing a newer user choice.
+let locationIntent = 0;
 function placeItem(name, active, onSelect, onDelete){
   const row = document.createElement('div'); row.className = 'place-item' + (active ? ' on' : '');
   const label = document.createElement('button'); label.type = 'button'; label.className = 'pi-name'; label.textContent = name;
@@ -1747,6 +1903,7 @@ function renderPlaceList(){
   settings.places.forEach((p, i) => host.appendChild(placeItem(p.name + (p.admin ? `, ${p.admin}` : ''), settings.activeIdx === i, () => switchTo(i), () => removePlace(i))));
 }
 function switchTo(idx){
+  const intent = ++locationIntent;
   settings.activeIdx = idx; saveSettings(); renderPlaceList();
   const p = idx != null ? settings.places[idx] : null;
   if (p?.test) loadTest();
@@ -1754,8 +1911,8 @@ function switchTo(idx){
   else if (myCoords){
     setPlace(myPlace?.name || 'Current location', myPlace?.sub || '');
     load(myCoords.lat, myCoords.lon);
-    reverseName(myCoords.lat, myCoords.lon).then(p => { if (p) myPlace = p; });
-  } else { setPlace('Locating...', ''); locate(); }
+    reverseName(myCoords.lat, myCoords.lon, intent).then(p => { if (p) myPlace = p; });
+  } else { setPlace('Locating...', ''); locate(intent); }
 }
 function removePlace(i){
   const was = settings.activeIdx === i;
@@ -1831,23 +1988,28 @@ searchInput.addEventListener('blur', () => setTimeout(closeResults, 120));
 function addTestPlace(){ testForecastCache = null; let i = settings.places.findIndex(p => p.test); if (i < 0) i = settings.places.push({ name: '🎣 Test conditions', test: true }) - 1; switchTo(i); }
 
 /* ---------- Geolocation ---------- */
-function locate(){
-  if (!('geolocation' in navigator)){ setPlace('Location unavailable', 'Search in settings'); return; }
+function locate(intent = ++locationIntent){
+  if (!('geolocation' in navigator)){
+    if (intent === locationIntent) setPlace('Location unavailable', 'Search in settings');
+    return;
+  }
   navigator.geolocation.getCurrentPosition(
     pos => {
+      if (intent !== locationIntent) return;
       myCoords = { lat: pos.coords.latitude, lon: pos.coords.longitude };
       setPlace(myPlace?.name || 'Current location', myPlace?.sub || '');
       load(myCoords.lat, myCoords.lon);
-      reverseName(myCoords.lat, myCoords.lon).then(p => { if (p) myPlace = p; });
+      reverseName(myCoords.lat, myCoords.lon, intent).then(p => { if (p) myPlace = p; });
     },
-    () => setPlace('Location blocked', 'Search in settings ⚙'),
+    () => { if (intent === locationIntent) setPlace('Location blocked', 'Search in settings ⚙'); },
     { enableHighAccuracy: false, timeout: 12000, maximumAge: 600000 }
   );
 }
-async function reverseName(lat, lon){
+async function reverseName(lat, lon, intent = locationIntent){
   try { const j = await AppCore.fetchJson(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=10`, { label: 'Reverse geocode', timeoutMs: 12000 });
     const a = j.address || {}; const name = a.city || a.town || a.village || a.hamlet || a.county || j.name;
     const sub = [a.state, (a.country_code || '').toUpperCase()].filter(Boolean).join(', ');
+    if (intent !== locationIntent) return null;
     if (name){ const p = { name, sub }; setPlace(name, sub); return p; } } catch {}
   return null;
 }

@@ -1,60 +1,72 @@
-# 24×7
+# 24×7 and Ebb
 
-Your week of weather, one screen.
+Two mobile-first, installable weather views that put an entire week on one screen.
+Both are framework-free static apps with no build step or API key.
 
-A single-serving, mobile-first site: a **24×7 grid of hourly weather** fills the
-entire screen with almost no UI chrome. Each square is color-coded by temperature
-using the **official NWS/NDFD palette** (decoded from the graphical-forecast
-legend). Precipitation is shown as an **animated overlay** whose opacity tracks the
-*probability* of rain and whose density/speed tracks the *intensity* (misty →
-drizzle → light → moderate → downpour, plus drifting snow).
+## 24×7
 
-- **Portrait:** days across the columns, hours down the rows.
-- **Landscape:** swapped — hours across, days down.
-- **Night hours are shaded**, with dashed sunrise (amber) / sunset (blue) markers.
-- **A bright red line** marks the current time in today's column — it advances live,
-  and the forecast auto-refreshes (every 15 min and on refocus).
-- **Tap any square** for the exact time, temperature, rain chance, and intensity.
-- **Long-press** the grid (or change palette) to flash a **color legend**.
-- **Tap the gear** (where the row/column headers meet) for settings.
+`index.html` displays 168 hourly weather cells. Days run across the screen in
+portrait; hours run across in landscape.
 
-Installable as a **PWA**: add to home screen for a full-screen, offline-capable app
-that paints the last forecast instantly (service worker + `manifest.json`).
+- Temperature uses the official NWS/NDFD palette or an optional Inferno palette.
+- Animated rain, snow, fog, wind, heat shimmer, and lightning show expected conditions.
+- Night shading, sunrise/sunset markers, and a live current-time line add context.
+- Tap a cell for details; swipe horizontally between saved places.
+- Swipe vertically between Temp / Rain and the customizable Run Index.
+- Choose units, clock format, palette, and number visibility in Settings.
+- Search and save multiple locations, or use the device's current location.
+- Share the current grid as an image.
 
-No build step, no framework, no API key. Three static files — drop it on GitHub
-Pages and go.
+## Ebb
 
-## Settings (saved locally)
+`ebb.html` is a companion fishing-conditions view. Its hourly ocean cutaway combines
+sky, wind, precipitation, tide height and direction, chop, moonlight, and night stars.
+It supports saved coastal locations, rolling or still water, cell details, and image
+sharing. NOAA station predictions are used when available; a clearly labeled simulated
+tide is the fallback and must not be used for navigation.
 
-- **View** — Temp / Rain (default) or **Run Index** (early stub; refined later).
-  The Run Index view colors squares with the **Viridis** colormap.
-- **Palette** — temperature view uses **NOAA** (default) or **Inferno**.
-- **Units** — Auto (°F in the US, °C elsewhere), or force °F / °C.
-- **Clock** — Auto, 12h, or 24h.
-- **Numbers** — show/hide the temperature label (black, or white where it reads better).
-- **Location** — use my location, or search any city.
+## Data and offline behavior
 
-## Data
+- [Open-Meteo](https://open-meteo.com/) provides global hourly forecasts.
+- [NOAA Tides and Currents](https://tidesandcurrents.noaa.gov/) provides Ebb's US
+  station predictions.
+- OpenStreetMap Nominatim supplies friendly names for device coordinates.
+- Forecasts are cached locally for instant repeat visits and offline fallback.
+- `sw.js` caches both app shells. Each app has its own web manifest and can be installed
+  as a full-screen PWA.
 
-[Open-Meteo](https://open-meteo.com/) — keyless, global, one request returns the
-full 7-day hourly forecast (temperature, precip probability, apparent temp, wind,
-humidity). The last response is cached in `localStorage` so repeat visits paint
-instantly while a fresh forecast loads in the background.
+## Project layout
 
-## Running it
+- `index.html`, `styles.css`, `app.js` — 24×7
+- `ebb.html`, `ebb.css`, `ebb.js` — Ebb
+- `shared.js`, `lightning.js` — shared browser utilities and effects
+- `sw.js`, `manifest.json`, `ebb.webmanifest` — PWA support
+- `fonts/`, `*.svg`, `html2canvas.min.js` — local assets and image sharing
+- `bot/` — Node 22+ Bluesky mention bot and tests
+- `BOT_SETUP.md` — bot deployment and configuration
 
-It's a static site. For the **auto-locate** feature, browsers require a secure
-context, so serve it over `localhost` or `https` (e.g. GitHub Pages):
+## Running locally
+
+Serve the repository with any static server:
 
 ```sh
-# any static server works, e.g.
 npx serve .
 ```
 
-Opening `index.html` directly via `file://` works too, but geolocation will be
-blocked — use the search box in settings to pick a location instead.
+Then open `/` for 24×7 or `/ebb.html` for Ebb. Device geolocation requires
+`localhost` or HTTPS; city search remains available when location permission is denied.
 
-## Renaming
+The browser apps need no dependency installation. To work on the bot:
 
-The title lives in one place: the `APP_NAME` constant at the top of `app.js`
-(alternatives considered: `hotmap`, `wgrid`).
+```sh
+cd bot
+npm install
+npm test
+```
+
+## Release checklist
+
+The service worker serves the app shell cache-first. Whenever any shipped HTML,
+CSS, JavaScript, font, icon, or manifest changes, increment the `CACHE` name near
+the top of `sw.js` before deploying. Without that bump, installed copies can
+continue running the previous shell.

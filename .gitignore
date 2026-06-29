@@ -4,6 +4,9 @@
 # Editor / atomic-write temp files
 *.tmp.*
 
+# Local visual-design scratchpad
+icon-concepts.html
+
 # OS junk
 Thumbs.db
 desktop.ini
