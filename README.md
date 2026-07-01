@@ -16,6 +16,8 @@ portrait; hours run across in landscape.
 - Choose units, clock format, palette, and number visibility in Settings.
 - Search and save multiple locations, or use the device's current location.
 - Share the current grid as an image.
+- On desktop, use a centered golden-ratio frame and choose portrait or landscape
+  layout in Settings; phones continue to follow their physical orientation.
 
 ## Ebb
 
@@ -24,6 +26,9 @@ sky, wind, precipitation, tide height and direction, chop, moonlight, and night 
 It supports saved coastal locations, rolling or still water, cell details, and image
 sharing. NOAA station predictions are used when available; a clearly labeled simulated
 tide is the fallback and must not be used for navigation.
+
+Ebb uses the same centered golden-ratio portrait/landscape frame when viewed on
+a desktop-class pointer and sufficiently large viewport.
 
 ## Data and offline behavior
 

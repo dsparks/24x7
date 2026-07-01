@@ -23,6 +23,7 @@ const DEFAULTS = {
   palette: 'noaa',      // 'noaa' | 'inferno'  (temperature view)
   unit: 'auto',         // 'auto' | 'f' | 'c'
   clock: 'auto',        // 'auto' | '12' | '24'
+  desktopLayout: 'portrait',
   showNumbers: true,
   nightMax: 0.75,       // peak night-shade darkness (0–1)
   runCurves: null,      // per-dimension preference curves (validated in loadSettings)
@@ -77,6 +78,7 @@ function loadSettings(){
     s.runCurves[d.key] = raw.map(snapTier);     // align stored values to the snap tiers
   }
   if (!s.popupPos || typeof s.popupPos !== 'object') s.popupPos = {};
+  if (!['portrait', 'landscape'].includes(s.desktopLayout)) s.desktopLayout = DEFAULTS.desktopLayout;
   if (!Array.isArray(s.places)) s.places = [];
   if (s.loc){                                    // migrate legacy single manual location
     const dup = s.places.findIndex(p => p.lat === s.loc.lat && p.lon === s.loc.lon);
@@ -510,7 +512,24 @@ function placeholderDays(){
 }
 
 /* ---------- Rendering ---------- */
-function isPortrait(){ return window.innerHeight >= window.innerWidth; }
+const PHI_INV = 0.6180339887498948;
+function desktopFrameEnabled(){
+  return !BOT_RENDER
+    && innerWidth >= 700 && innerHeight >= 500
+    && matchMedia('(hover:hover) and (pointer:fine)').matches;
+}
+function applyDesktopFrame(){
+  const enabled = desktopFrameEnabled();
+  document.body.classList.toggle('desktop-frame', enabled);
+  if (!enabled) return;
+  const longSide = Math.max(1, Math.min(innerWidth - 24, innerHeight - 24));
+  const portrait = settings.desktopLayout !== 'landscape';
+  const width = portrait ? longSide * PHI_INV : longSide;
+  const height = portrait ? longSide : longSide * PHI_INV;
+  document.body.style.setProperty('--frame-w', `${width}px`);
+  document.body.style.setProperty('--frame-h', `${height}px`);
+}
+function isPortrait(){ return desktopFrameEnabled() ? settings.desktopLayout !== 'landscape' : window.innerHeight >= window.innerWidth; }
 
 function cellRGB(cell, view = settings.view){
   if (!cell || cell.c == null) return [17,21,28];
@@ -1227,7 +1246,7 @@ function cycleLocation(dir){
 // completes (neighbor slides to centre, then becomes the real grid) or springs back.
 // Ghosts are static colour grids (no particle layer) built from the prefetched forecast
 // for an instant paint; an un-warmed neighbor falls back to a loading shimmer.
-let lpTimer = 0, lpFired = false, swiped = false, lpX = 0, lpY = 0;
+let lpTimer = 0, lpFired = false, swiped = false, pointerActive = false, lpX = 0, lpY = 0;
 let dragAxis = null, dragOff = 0, dragSize = 0, slideCleanupT = 0, pendingFinish = null;
 let ghostPrev = null, ghostNext = null;
 const SWIPE_PREP_PX = 5;
@@ -1321,6 +1340,7 @@ function applyDrag(off, ms){
 }
 function resetSlide(){
   dragAxis = null;
+  gridEl.classList.remove('swiping');
   for (const el of [gridEl, ...fxEls()]){ el.style.transition = ''; el.style.transform = ''; }
   destroyGhosts(); fxVisible(true); pendingFinish = null;
 }
@@ -1347,15 +1367,16 @@ function slideCommit(axis, dir){
 }
 
 gridEl.addEventListener('pointerdown', e => {
+  pointerActive = true;
   clearTimeout(slideCleanupT);
   if (pendingFinish) pendingFinish();          // re-touch mid-commit → finish the switch, don't drop it
   else if (ghostPrev || ghostNext) resetSlide();
   lpFired = false; swiped = false; dragAxis = null; dragOff = 0;
   lpX = e.clientX; lpY = e.clientY;
-  try { gridEl.setPointerCapture(e.pointerId); } catch {}
   lpTimer = setTimeout(() => { lpFired = true; showLegend(); }, 480);
 });
 gridEl.addEventListener('pointermove', e => {
+  if (!pointerActive) return;
   const dx = e.clientX - lpX, dy = e.clientY - lpY;
   if (!dragAxis){
     if (lpFired) return;
@@ -1369,6 +1390,8 @@ gridEl.addEventListener('pointermove', e => {
     const primary = Math.abs(dragAxis === 'x' ? dx : dy);
     if (primary < SWIPE_START_PX) return;
     swiped = true;                           // suppress the tap-to-readout click
+    gridEl.classList.add('swiping');
+    try { gridEl.setPointerCapture(e.pointerId); } catch {}
   }
   let off = dragAxis === 'x' ? dx : dy;
   if (!canSwipe(dragAxis)) off *= 0.2;       // nowhere to go → rubber-band
@@ -1376,6 +1399,8 @@ gridEl.addEventListener('pointermove', e => {
   applyDrag(off, 0);
 });
 function endDrag(e){
+  if (!pointerActive) return;
+  pointerActive = false;
   clearTimeout(lpTimer);
   try { gridEl.releasePointerCapture(e.pointerId); } catch {}
   if (!dragAxis){
@@ -1576,6 +1601,7 @@ function syncSheet(){
   });
   document.querySelectorAll('[data-temp-only]').forEach(el =>
     el.style.display = settings.view === 'run' ? 'none' : '');
+  document.querySelectorAll('[data-desktop-layout]').forEach(el => { el.hidden = !desktopFrameEnabled(); });
   $('#numbersLabel').textContent = settings.view === 'run' ? 'Show Run Index numbers' : 'Show temperature numbers';
   renderPlaceList();
 }
@@ -1587,6 +1613,7 @@ document.querySelectorAll('.seg').forEach(seg => {
     if (v === 'true') v = true; else if (v === 'false') v = false;
     settings[key] = v;
     saveSettings();
+    applyDesktopFrame();
     syncSheet();
     render();
     if (key === 'view' || key === 'palette' || key === 'unit') showLegend();
@@ -2327,6 +2354,7 @@ let rT;
 window.addEventListener('resize', () => {
   clearTimeout(rT);
   rT = setTimeout(() => {
+    applyDesktopFrame();
     if ((isPortrait() ? 'p' : 'l') !== orientation) render();   // render() re-lays the canvas
     else layoutFx();                                            // same orientation: just re-measure
     repositionVisiblePopups();
@@ -2362,4 +2390,5 @@ setInterval(refreshMyCoords, 5 * 60 * 1000);
 // Register service worker for offline / installable PWA (no-op on file://).
 if (!BOT_RENDER) AppCore.registerFreshServiceWorker('sw.js');
 
+applyDesktopFrame();
 boot();

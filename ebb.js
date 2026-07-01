@@ -106,7 +106,7 @@ function skyStyle(elev, cloud){
 }
 
 /* ---------- Settings ---------- */
-const DEFAULTS = { clock: 'auto', waves: 'roll', places: [], activeIdx: null, popupPos: {} };
+const DEFAULTS = { clock: 'auto', waves: 'roll', desktopLayout: 'portrait', places: [], activeIdx: null, popupPos: {} };
 let settings = loadSettings();
 function loadSettings(){
   let s;
@@ -115,6 +115,7 @@ function loadSettings(){
   if (!Array.isArray(s.places)) s.places = [];
   if (!s.popupPos || typeof s.popupPos !== 'object') s.popupPos = {};
   if (!['roll', 'still'].includes(s.waves)) s.waves = DEFAULTS.waves;
+  if (!['portrait', 'landscape'].includes(s.desktopLayout)) s.desktopLayout = DEFAULTS.desktopLayout;
   if (s.activeIdx != null && !(s.activeIdx >= 0 && s.activeIdx < s.places.length)) s.activeIdx = null;
   return s;
 }
@@ -500,7 +501,23 @@ function cellEl(di, h){
   c._starA = sky.starA; c._glow = sky.glow; c._hor = sky.hor;
   return el;
 }
-const isPortrait = () => innerHeight >= innerWidth;
+const PHI_INV = 0.6180339887498948;
+function desktopFrameEnabled(){
+  return innerWidth >= 700 && innerHeight >= 500
+    && matchMedia('(hover:hover) and (pointer:fine)').matches;
+}
+function applyDesktopFrame(){
+  const enabled = desktopFrameEnabled();
+  document.body.classList.toggle('desktop-frame', enabled);
+  if (!enabled) return;
+  const longSide = Math.max(1, Math.min(innerWidth - 24, innerHeight - 24));
+  const portrait = settings.desktopLayout !== 'landscape';
+  const width = portrait ? longSide * PHI_INV : longSide;
+  const height = portrait ? longSide : longSide * PHI_INV;
+  document.body.style.setProperty('--frame-w', `${width}px`);
+  document.body.style.setProperty('--frame-h', `${height}px`);
+}
+const isPortrait = () => desktopFrameEnabled() ? settings.desktopLayout !== 'landscape' : innerHeight >= innerWidth;
 function render(){
   if (!days.length) return;
   orientation = isPortrait() ? 'p' : 'l';
@@ -1532,7 +1549,7 @@ function makeDraggablePopup(kind, el, afterDrag, beforeDrag, onTap){
 
 /* ---------- Grid gestures: tap → readout; horizontal swipe → preview/cycle locations ---------- */
 const tipEl = $('#tip'); let tipTimer = 0, suppressTipGridClickUntil = 0, selectedCell = null;
-let gX = 0, gY = 0, swiped = false, dragAxis = null, dragOff = 0, dragSize = 0, slideCleanupT = 0, pendingFinish = null;
+let gX = 0, gY = 0, swiped = false, pointerActive = false, dragAxis = null, dragOff = 0, dragSize = 0, slideCleanupT = 0, pendingFinish = null;
 let ghostPrev = null, ghostNext = null;
 const SWIPE_EASE = 'cubic-bezier(.22,.61,.36,1)';
 const fxEls = () => [fx.canvas].filter(Boolean);
@@ -1638,6 +1655,7 @@ function applyDrag(off, ms){
 }
 function resetSlide(){
   dragAxis = null;
+  gridEl.classList.remove('swiping');
   for (const el of [gridEl, ...fxEls()]){ el.style.transition = ''; el.style.transform = ''; }
   destroyGhosts(); fxVisible(true); pendingFinish = null;
 }
@@ -1655,30 +1673,35 @@ function slideCommit(dir){
   slideCleanupT = setTimeout(() => pendingFinish && pendingFinish(), IN + 10);
 }
 gridEl.addEventListener('pointerdown', e => {
+  pointerActive = true;
   clearTimeout(slideCleanupT);
   if (pendingFinish) pendingFinish();
   else if (ghostPrev || ghostNext) resetSlide();
   swiped = false; dragAxis = null; dragOff = 0; gX = e.clientX; gY = e.clientY;
-  try { gridEl.setPointerCapture(e.pointerId); } catch {}
   dragSize = gridEl.clientWidth;
 });
 gridEl.addEventListener('pointermove', e => {
+  if (!pointerActive) return;
   const dx = e.clientX - gX, dy = e.clientY - gY;
   if (!dragAxis){
     if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+    gridEl.classList.add('swiping');
+    try { gridEl.setPointerCapture(e.pointerId); } catch {}
     if (Math.abs(dx) < Math.abs(dy) * 1.25){ dragAxis = 'y'; swiped = true; destroyGhosts(); return; }
     dragAxis = 'x';
     swiped = true;
     hideTip();
     if (canSwipe()) buildCarousel();
   }
-  if (dragAxis !== 'x') return;
+  if (dragAxis !== 'x'){ resetSlide(); return; }
   let off = dx;
   if (!canSwipe()) off *= 0.2;
   dragOff = off;
   applyDrag(off, 0);
 });
 function endGridDrag(e){
+  if (!pointerActive) return;
+  pointerActive = false;
   try { gridEl.releasePointerCapture(e.pointerId); } catch {}
   if (!dragAxis){
     destroyGhosts();
@@ -1870,11 +1893,12 @@ $('#shareView').addEventListener('click', async () => {
 function syncSheet(){
   $('#placeName').textContent = place.name; $('#placeSub').textContent = place.sub || '';
   document.querySelectorAll('.seg').forEach(seg => { const v = String(settings[seg.dataset.setting]); seg.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.value === v)); });
+  document.querySelectorAll('[data-desktop-layout]').forEach(el => { el.hidden = !desktopFrameEnabled(); });
   renderPlaceList();
 }
 document.querySelectorAll('.seg').forEach(seg => seg.addEventListener('click', e => {
   const btn = e.target.closest('button'); if (!btn) return;
-  settings[seg.dataset.setting] = btn.dataset.value; saveSettings(); syncSheet(); render();
+  settings[seg.dataset.setting] = btn.dataset.value; saveSettings(); applyDesktopFrame(); syncSheet(); render();
 }));
 
 /* ---------- How to use / about ---------- */
@@ -2079,7 +2103,7 @@ function genTestForecast(){
 }
 
 /* ---------- Resize ---------- */
-let rT; addEventListener('resize', () => { clearTimeout(rT); rT = setTimeout(() => { (isPortrait() ? 'p' : 'l') !== orientation ? render() : layoutFx(); }, 120); });
+let rT; addEventListener('resize', () => { clearTimeout(rT); rT = setTimeout(() => { applyDesktopFrame(); (isPortrait() ? 'p' : 'l') !== orientation ? render() : layoutFx(); }, 120); });
 
 // Refresh only while visible; visibilitychange catches up after a sleeping PWA resumes.
 setInterval(() => {
@@ -2122,4 +2146,5 @@ function boot(){
   locate();
 }
 
+applyDesktopFrame();
 boot();
