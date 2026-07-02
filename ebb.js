@@ -106,7 +106,7 @@ function skyStyle(elev, cloud){
 }
 
 /* ---------- Settings ---------- */
-const DEFAULTS = { clock: 'auto', waves: 'roll', desktopLayout: 'portrait', places: [], activeIdx: null, popupPos: {} };
+const DEFAULTS = { clock: 'auto', waves: 'roll', bite: 'on', desktopLayout: 'portrait', places: [], activeIdx: null, popupPos: {} };
 let settings = loadSettings();
 function loadSettings(){
   let s;
@@ -115,6 +115,7 @@ function loadSettings(){
   if (!Array.isArray(s.places)) s.places = [];
   if (!s.popupPos || typeof s.popupPos !== 'object') s.popupPos = {};
   if (!['roll', 'still'].includes(s.waves)) s.waves = DEFAULTS.waves;
+  if (!['on', 'off'].includes(s.bite)) s.bite = DEFAULTS.bite;
   if (!['portrait', 'landscape'].includes(s.desktopLayout)) s.desktopLayout = DEFAULTS.desktopLayout;
   if (s.activeIdx != null && !(s.activeIdx >= 0 && s.activeIdx < s.places.length)) s.activeIdx = null;
   return s;
@@ -144,6 +145,7 @@ function buildUrl(lat, lon){
     latitude: lat.toFixed(4), longitude: lon.toFixed(4),
     hourly: 'temperature_2m,cloud_cover,precipitation,snowfall,precipitation_probability,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m,is_day',
     wind_speed_unit: 'mph', timezone: 'auto', forecast_days: '7',
+    timeformat: 'unixtime',   // epochs, not wall-clock ISO: exact across DST transitions
   });
   return `https://api.open-meteo.com/v1/forecast?${p}`;
 }
@@ -155,12 +157,25 @@ function toDays(j){
   const h = j.hourly || {}, time = h.time || [];
   const meta = forecastMeta(j);
   const todayKey = forecastNow(meta).key;
+  const epochTime = typeof time[0] === 'number';
+  const offset = offsetForCalc(meta.offset);
   const byDate = new Map();
   for (let i = 0; i < time.length; i++){
-    const iso = time[i], dateKey = iso.slice(0, 10), hour = +iso.slice(11, 13);
+    // Fresh responses carry unixtime epochs (exact across DST); ISO strings from
+    // a pre-upgrade localStorage cache or the test generator use the legacy path.
+    let epochMs, dateKey, hour;
+    if (epochTime){
+      epochMs = time[i] * 1000;
+      const p = AppCore.epochParts(time[i], meta);
+      dateKey = p.key; hour = p.hour;
+    } else {
+      const iso = time[i];
+      dateKey = iso.slice(0, 10); hour = +iso.slice(11, 13);
+      epochMs = Date.parse(iso + 'Z') - offset * 1000;   // approximate near DST; fine for cache/test data
+    }
     if (!byDate.has(dateKey)) byDate.set(dateKey, new Array(24).fill(null));
     byDate.get(dateKey)[hour] = {
-      iso,
+      epochMs,
       tF: cToF(h.temperature_2m?.[i]),
       cloud: h.cloud_cover?.[i] ?? 0,
       precipMm: h.precipitation?.[i] ?? 0,
@@ -176,10 +191,28 @@ function toDays(j){
       moon: null,
     };
   }
+  // Spring-forward: one wall-clock hour never happens; fill the black gap from
+  // its neighbors so the cutaway stays continuous.
+  for (const cells of byDate.values()){
+    for (let hh = 1; hh < 23; hh++){
+      const a = cells[hh - 1], b = cells[hh + 1];
+      if (cells[hh] || !a || !b) continue;
+      const mid = (x, y) => (x == null || y == null) ? (x ?? y) : (x + y) / 2;
+      cells[hh] = {
+        epochMs: (a.epochMs + b.epochMs) / 2,
+        tF: mid(a.tF, b.tF), cloud: mid(a.cloud, b.cloud) ?? 0,
+        precipMm: mid(a.precipMm, b.precipMm) ?? 0, snowCm: mid(a.snowCm, b.snowCm) ?? 0,
+        pop: Math.round(mid(a.pop, b.pop) ?? 0), wcode: a.wcode ?? b.wcode ?? 0,
+        windMph: mid(a.windMph, b.windMph) ?? 0, windDir: a.windDir ?? b.windDir,
+        gust: mid(a.gust, b.gust) ?? 0, isDay: a.isDay || b.isDay ? 1 : 0,
+        tideFt: null, tideMark: null, moon: null, synth: true,
+      };
+    }
+  }
   const keys = [...byDate.keys()].sort().slice(0, 7);
   const days = keys.map(k => {
     const d = new Date(k + 'T00:00');
-    return { date: d, dow: WD[d.getDay()], dnum: d.getDate(), isToday: k === todayKey, cells: byDate.get(k) };
+    return { date: d, key: k, dow: WD[d.getDay()], dnum: d.getDate(), isToday: k === todayKey, cells: byDate.get(k) };
   });
   return { days, offset: meta.offset, meta };
 }
@@ -208,31 +241,54 @@ async function nearestStation(lat, lon){
   for (const s of list){ const d = haversineKm(lat, lon, s.lat, s.lon); if (d < bd){ bd = d; best = s; } }
   return best && bd <= 250 ? { ...best, dist: bd } : null;
 }
+/* NOAA predictions are requested in GMT and matched to forecast hours by epoch,
+ * so a station across a timezone (or DST) boundary from the forecast location
+ * can no longer shift every tide by an hour. */
+const epochHourKey = ms => Math.round(ms / 3600000);
+const noaaEpochMs = t => Date.parse(t.replace(' ', 'T') + 'Z');   // "YYYY-MM-DD HH:mm" GMT
 async function fetchTides(stationId, start){
   const bd = `${start.getFullYear()}${pad(start.getMonth() + 1)}${pad(start.getDate())}`;
-  const url = `https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=predictions&application=ebb&datum=MLLW&interval=h&units=english&time_zone=lst_ldt&format=json&station=${stationId}&begin_date=${bd}&range=168`;
+  const url = `https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=predictions&application=ebb&datum=MLLW&interval=h&units=english&time_zone=gmt&format=json&station=${stationId}&begin_date=${bd}&range=192`;
   const j = await AppCore.fetchJson(url, { label: 'NOAA tides', timeoutMs: 12000 });
   if (j.error) throw new Error(j.error.message || 'NOAA tide error');
   const map = new Map();
-  (j.predictions || []).forEach(p => map.set(p.t.replace(' ', 'T').slice(0, 13), +p.v));
+  (j.predictions || []).forEach(p => map.set(epochHourKey(noaaEpochMs(p.t)), +p.v));
   return map;
 }
 async function fetchTideMarks(stationId, start){
   const bd = `${start.getFullYear()}${pad(start.getMonth() + 1)}${pad(start.getDate())}`;
-  const url = `https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=predictions&application=ebb&datum=MLLW&interval=hilo&units=english&time_zone=lst_ldt&format=json&station=${stationId}&begin_date=${bd}&range=168`;
+  const url = `https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=predictions&application=ebb&datum=MLLW&interval=hilo&units=english&time_zone=gmt&format=json&station=${stationId}&begin_date=${bd}&range=192`;
   const j = await AppCore.fetchJson(url, { label: 'NOAA tide marks', timeoutMs: 12000 });
   if (j.error) throw new Error(j.error.message || 'NOAA tide mark error');
   const marks = [];
   (j.predictions || []).forEach(p => {
-    const iso = p.t?.replace(' ', 'T');
     const type = p.type === 'H' || p.type === 'L' ? p.type : null;
-    const minute = +(iso || '').slice(14, 16);
-    if (iso && type && Number.isFinite(minute)) marks.push({ iso, type, minute });
+    const ms = p.t ? noaaEpochMs(p.t) : NaN;
+    if (type && Number.isFinite(ms)) marks.push({ epochMs: ms, type });
   });
   return marks;
 }
 function applyTideMap(days, map){
-  days.forEach(d => d.cells.forEach(c => { if (c) c.tideFt = map.get(c.iso.slice(0, 13)) ?? null; }));
+  days.forEach(d => d.cells.forEach(c => { if (c) c.tideFt = map.get(epochHourKey(c.epochMs)) ?? null; }));
+  // Bridge small NOAA gaps (DST edges, range shortfall) by interpolating between
+  // known heights — and clamp the extremes to the nearest known value — instead
+  // of painting a fake mid-tide waterline for missing hours.
+  const flat = [];
+  days.forEach(d => d.cells.forEach(c => { if (c) flat.push(c); }));
+  let lastKnown = -1;
+  for (let i = 0; i < flat.length; i++){
+    if (flat[i].tideFt == null) continue;
+    if (lastKnown < 0){
+      for (let k = 0; k < i; k++) flat[k].tideFt = flat[i].tideFt;      // leading edge: clamp
+    } else if (i - lastKnown > 1 && i - lastKnown <= 4){                // small interior gap: interpolate
+      for (let k = lastKnown + 1; k < i; k++){
+        const t = (k - lastKnown) / (i - lastKnown);
+        flat[k].tideFt = flat[lastKnown].tideFt * (1 - t) + flat[i].tideFt * t;
+      }
+    }
+    lastKnown = i;
+  }
+  if (lastKnown >= 0) for (let k = lastKnown + 1; k < flat.length; k++) flat[k].tideFt = flat[lastKnown].tideFt;   // trailing edge: clamp
 }
 function clearTideMarks(days){
   days.forEach(d => d.cells.forEach(c => { if (c) c.tideMark = null; }));
@@ -240,10 +296,12 @@ function clearTideMarks(days){
 function applyTideMarks(days, marks){
   clearTideMarks(days);
   const byHour = new Map();
-  days.forEach((d, di) => d.cells.forEach((c, h) => { if (c) byHour.set(c.iso.slice(0, 13), { c, di, h }); }));
+  days.forEach((d, di) => d.cells.forEach((c, h) => { if (c) byHour.set(epochHourKey(c.epochMs), { c, di, h }); }));
   marks.forEach(m => {
-    const hit = byHour.get(m.iso.slice(0, 13));
-    if (hit) hit.c.tideMark = { type: m.type, minute: clamp(m.minute, 0, 59), di: hit.di, h: hit.h };
+    // Bucket the mark into the forecast hour containing it, and keep the minute
+    // within that hour (offsets NOAA serves are whole-hour, so this stays exact).
+    const hit = byHour.get(Math.floor(m.epochMs / 3600000)) || byHour.get(epochHourKey(m.epochMs));
+    if (hit) hit.c.tideMark = { type: m.type, minute: clamp(Math.round((m.epochMs - Math.floor(m.epochMs / 3600000) * 3600000) / 60000), 0, 59), di: hit.di, h: hit.h };
   });
 }
 function synthTides(days, seedLon){
@@ -299,13 +357,43 @@ function enrichTide(days){
     if (c.tideFt != null) prev = c.tideFt;
   }));
   refineTideDirectionFromMarks(days);
+  enrichBite(days);
 }
-function enrichSun(days, lat, lon, offset){
-  offset = offsetForCalc(offset);
+
+/* ---------- Bite windows ----------
+ * A light solunar-style score from ingredients the grid already computes:
+ * proximity to a tide turn (the strongest driver), dawn/dusk twilight, and the
+ * moon transit (the classic "major period"). Cells over the threshold get a
+ * subtle marker plus a tip line naming the contributors. */
+function enrichBite(days){
+  const marks = [];
+  days.forEach((d, di) => d.cells.forEach((c, h) => {
+    if (c?.tideMark) marks.push(di * 24 + h + (c.tideMark.minute || 0) / 60);
+  }));
+  days.forEach((d, di) => {
+    const transitH = d.cells.find(c => c?.moon)?.moon?.transitH ?? null;
+    d.cells.forEach((c, h) => {
+      if (!c){ return; }
+      const t = di * 24 + h + 0.5;
+      let tideTurn = 0;
+      for (const m of marks) tideTurn = Math.max(tideTurn, 1 - Math.abs(t - m) / 1.5);
+      tideTurn = Math.max(0, tideTurn);
+      const twilight = c.elev == null ? 0 : Math.max(0, 1 - Math.abs(c.elev) / 8);
+      const moon = transitH == null ? 0 : Math.max(0, 1 - Math.abs((h + 0.5) - transitH) / 1.5);
+      c.bite = 0.5 * tideTurn + 0.3 * twilight + 0.2 * moon;
+      c.biteOn = marks.length > 0 && c.bite >= 0.45;   // no real/synth marks at all → no windows
+      c.biteWhy = c.biteOn
+        ? [tideTurn > 0.5 && 'tide turn', twilight > 0.5 && (h < 12 ? 'dawn' : 'dusk'), moon > 0.5 && 'moon overhead'].filter(Boolean)
+        : null;
+    });
+  });
+}
+function enrichSun(days, lat, lon){
+  // Each cell carries its true epoch, so this is exact even when a DST
+  // transition falls inside the forecast week.
   days.forEach(d => d.cells.forEach(c => {
     if (!c) return;
-    const utc = new Date(Date.parse(c.iso + 'Z') - offset * 1000);
-    c.elev = solarElevation(utc, lat, lon);
+    c.elev = solarElevation(new Date(c.epochMs), lat, lon);
   }));
 }
 const SYNODIC_MONTH = 29.530588853;
@@ -314,16 +402,16 @@ function moonPhaseAt(date){
   const daysSince = (date.getTime() - NEW_MOON_EPOCH) / 86400000;
   return ((daysSince / SYNODIC_MONTH) % 1 + 1) % 1;
 }
-function enrichMoon(days, offset){
-  offset = offsetForCalc(offset);
+function enrichMoon(days){
   days.forEach(d => {
     d.cells.forEach(c => { if (c) c.moon = null; });
-    const noonUtc = new Date(Date.parse(`${ymd(d.date)}T12:00Z`) - offset * 1000);
-    const phase = moonPhaseAt(noonUtc);
+    const noonCell = d.cells[12] || d.cells.find(Boolean);
+    if (!noonCell) return;
+    const phase = moonPhaseAt(new Date(noonCell.epochMs));
     const transitHour = (12 + phase * 24) % 24;
     const h = Math.round(transitHour) % 24;
     const c = d.cells[h];
-    if (c) c.moon = { phase };
+    if (c) c.moon = { phase, transitH: transitHour };
   });
 }
 
@@ -346,13 +434,35 @@ function cacheForecast(lat, lon, json, t = Date.now()){
   while (fcCache.size > 8) fcCache.delete(fcCache.keys().next().value);
 }
 function readCache(){ return AppCore.readJson(LS.cache); }
-function writeCache(lat, lon, json, t = Date.now()){ AppCore.writeJson(LS.cache, { lat, lon, t, json }); }
+function writeCache(lat, lon, json, t = Date.now()){
+  const prev = readCache();
+  // Keep the last real tide payload when only the forecast refreshes.
+  const tides = AppCore.coordsMatch(prev, { lat, lon }) ? prev?.tides : null;
+  AppCore.writeJson(LS.cache, { lat, lon, t, json, tides: tides || null });
+}
+function writeTideCache(lat, lon, tides){
+  const prev = readCache();
+  if (!AppCore.coordsMatch(prev, { lat, lon })) return;   // only attach to the matching forecast
+  AppCore.writeJson(LS.cache, { ...prev, tides });
+}
 function cacheMatches(cache, lat, lon){ return AppCore.cacheMatches(cache, lat, lon); }
+/* Re-apply persisted NOAA predictions to the current `days` (offline / instant
+ * repaint). True predictions from minutes ago beat a simulated curve. */
+function applyCachedTides(cache){
+  const t = cache?.tides;
+  if (!t?.map?.length || Date.now() - (t.t || 0) > 36 * 3600000) return false;   // stale predictions age out
+  applyTideMap(days, new Map(t.map));
+  if (![...days].some(d => d.cells.some(c => c && c.tideFt != null))) return false;
+  if (t.marks?.length) applyTideMarks(days, t.marks); else synthTideMarks(days);
+  enrichTide(days);
+  setTideSrc(`Tide: ${t.stationName || 'NOAA'} (cached)`);
+  return true;
+}
 function previewDays(json, lat, lon){
   const parsed = toDays(json);
   const out = parsed.days;
-  enrichSun(out, lat, lon, parsed.offset);
-  enrichMoon(out, parsed.offset);
+  enrichSun(out, lat, lon);
+  enrichMoon(out);
   synthTides(out, lon);
   synthTideMarks(out);
   enrichTide(out);
@@ -362,8 +472,8 @@ function applyForecast(json, lat, lon, fetchedAt = Date.now(), source = 'fresh')
   const parsed = toDays(json);
   currentForecastMeta = parsed.meta;
   days = parsed.days;
-  enrichSun(days, lat, lon, parsed.offset);
-  enrichMoon(days, parsed.offset);
+  enrichSun(days, lat, lon);
+  enrichMoon(days);
   setUpdatedAt(fetchedAt, source);
   return parsed;
 }
@@ -397,6 +507,12 @@ async function loadTides(lat, lon, start, seq, stationPromise = null){
     if (![...days].some(d => d.cells.some(c => c && c.tideFt != null))) throw new Error('empty');
     if (![...days].some(d => d.cells.some(c => c && c.tideMark))) synthTideMarks(days);
     setTideSrc(`Tide: ${st.name}`);
+    writeTideCache(lat, lon, {
+      t: Date.now(),
+      stationName: st.name,
+      map: [...mapResult.value],
+      marks: marksResult.status === 'fulfilled' ? marksResult.value : null,
+    });
   } catch {
     if (seq !== loadSeq) return false;
     applySimulatedTides(lon, 'Tide: simulated (NOAA unavailable)');
@@ -413,9 +529,12 @@ async function load(lat, lon){
   const cache = readCache();
   const warm = fcCache.get(fcKey(lat, lon)) || (cacheMatches(cache, lat, lon) ? cache : null);
   const hadCache = !!warm;
+  let usedCachedTides = false;
   if (hadCache){
     applyForecast(warm.json, lat, lon, warm.t, 'cached');
-    applySimulatedTides(lon, 'Tide: simulated until NOAA refreshes');
+    // Real (persisted) NOAA predictions beat a simulated curve for the repaint.
+    usedCachedTides = cacheMatches(cache, lat, lon) && applyCachedTides(cache);
+    if (!usedCachedTides) applySimulatedTides(lon, 'Tide: simulated until NOAA refreshes');
     resetDelight();
     render();
   } else {
@@ -438,7 +557,7 @@ async function load(lat, lon){
     if (seq !== loadSeq) return;
     if (hadCache){
       setUpdatedAt(warm.t, 'stale');
-      setTideSrc('Tide: simulated (offline)');
+      if (!usedCachedTides) setTideSrc('Tide: simulated (offline)');
       render();
     } else {
       setTideSrc('Forecast unavailable');
@@ -573,11 +692,17 @@ function buildCellFx(fc){
   const c = fc.cell;
   fc.thunder = isThunder(c) && (c.pop || 0) > 10;
   if (fc.thunder) LightningFx.seedCell(fc, fc.di, fc.h);
+  // Deterministic per-(cell, particle) values: re-running layoutFx (resize, tide
+  // fill-in, opening the settings sheet) must NOT reshuffle the sky.
+  const det = (salt, a = 0, b = 1) => a + (b - a) * hash01(fc.di, fc.h, salt);
   // stars
   fc.stars = [];
   if (c._starA > 0.02){
-    const n = Math.round(4 + Math.random() * 5);
-    for (let i = 0; i < n; i++) fc.stars.push({ x: Math.random(), y: Math.random() * 0.8, r: rand(0.5, 1.4), tw: rand(0.7, 1.7), ph: rand(0, 6.28) });
+    const n = Math.round(4 + det(101) * 5);
+    for (let i = 0; i < n; i++) fc.stars.push({
+      x: det(110 + i * 7), y: det(111 + i * 7) * 0.8, r: det(112 + i * 7, 0.5, 1.4),
+      tw: det(113 + i * 7, 0.7, 1.7), ph: det(114 + i * 7, 0, 6.28),
+    });
   }
   // precip particles
   fc.precip = []; fc.snow = (c.snowCm || 0) > 0;
@@ -585,10 +710,18 @@ function buildCellFx(fc){
   if (wet){
     const intensity = clamp((fc.snow ? c.snowCm * 3 : c.precipMm * 6), 0.4, 6);
     const n = Math.round(3 + intensity * 2.2);
-    for (let i = 0; i < n; i++) fc.precip.push({ x: Math.random(), y: Math.random(), v: rand(0.6, 1.1), ph: rand(0, 6.28) });
+    for (let i = 0; i < n; i++) fc.precip.push({
+      x: det(210 + i * 5), y: det(211 + i * 5), v: det(212 + i * 5, 0.6, 1.1), ph: det(213 + i * 5, 0, 6.28),
+    });
   }
 }
-function layoutFx(){
+// Upper bound of the V2 wave amplitude for a cell (used to size seam covers so
+// crests can't expose the cell border above the mean waterline in high wind).
+function waveAmpOf(fc){
+  const c = fc.cell;
+  return clamp(0.5 + ((c.windMph || 0) + (c.gust || 0) * 0.4) * 0.16, 0.5, fc.hgt * 0.16);
+}
+function layoutFx({ still = false } = {}){
   fitHeaders();
   if (!fx.canvas){ fx.canvas = $('#fx'); fx.ctx = fx.canvas.getContext('2d'); }
   const g = gridEl.getBoundingClientRect();
@@ -598,14 +731,18 @@ function layoutFx(){
   fx.canvas.width = Math.round(g.width * fx.dpr); fx.canvas.height = Math.round(g.height * fx.dpr);
   fx.ctx.setTransform(fx.dpr, 0, 0, fx.dpr, 0, 0);
   fx.cells = [];
+  const borderless = gridEl.classList.contains('snapshot-rendering');
+  let bw = 0, bh = 0, borderMeasured = borderless;   // cells are uniform: read the border once, not 168×
   gridEl.querySelectorAll('.cell').forEach(el => {
     if (el.classList.contains('empty')) return;
     const c = days[+el.dataset.di]?.cells[+el.dataset.h]; if (!c) return;
     const r = el.getBoundingClientRect();
-    const cs = getComputedStyle(el);
-    const borderless = gridEl.classList.contains('snapshot-rendering');
-    const bw = borderless ? 0 : parseFloat(cs.borderRightWidth) || 0;
-    const bh = borderless ? 0 : parseFloat(cs.borderBottomWidth) || 0;
+    if (!borderMeasured){
+      const cs = getComputedStyle(el);
+      bw = parseFloat(cs.borderRightWidth) || 0;
+      bh = parseFloat(cs.borderBottomWidth) || 0;
+      borderMeasured = true;
+    }
     const fc = { di: +el.dataset.di, h: +el.dataset.h, cell: c, x: r.left - g.left, y: r.top - g.top, w: Math.max(1, r.width - bw), hgt: Math.max(1, r.height - bh) };
     buildCellFx(fc); fx.cells.push(fc);
   });
@@ -616,13 +753,22 @@ function layoutFx(){
       const a = row[i], b = row[i + 1];
       fx.seams.push({
         x: (a.x + a.w + b.x) / 2,
-        y: Math.min(waterTopOf(a), waterTopOf(b)) - 1,
+        y: Math.min(waterTopOf(a) - waveAmpOf(a), waterTopOf(b) - waveAmpOf(b)) - 1,
         bottom: Math.max(a.y + a.hgt, b.y + b.hgt),
       });
     }
   }
+  // Does anything actually move? Rolling water always does; otherwise only
+  // twinkling stars, precip, or lightning need a live loop.
+  fx.animated = settings.waves !== 'still'
+    || fx.cells.some(fc => fc.stars.length || fc.precip.length || fc.thunder);
   scheduleDelight();
-  startFx();
+  if (still){
+    cancelAnimationFrame(fx.raf); fx.raf = 0; clearTimeout(fx.stillT);
+    drawFxStill();
+  } else {
+    startFx();
+  }
 }
 function drawCell(fc, dt){
   const ctx = fx.ctx, c = fc.cell;
@@ -633,12 +779,15 @@ function drawCell(fc, dt){
   ctx.save();
   ctx.beginPath(); ctx.rect(left, top, w, h); ctx.clip();
 
-  // golden-hour / twilight glow near the horizon
+  // golden-hour / twilight glow near the horizon — the gradient is immutable
+  // per layout, so build it once instead of allocating one every frame
   if (c._glow > 0.04){
-    const gr = ctx.createRadialGradient(left + w / 2, waterTop, 1, left + w / 2, waterTop, w * 0.9);
-    gr.addColorStop(0, `rgba(255,178,96,${(c._glow * 0.45).toFixed(3)})`);
-    gr.addColorStop(1, 'rgba(255,178,96,0)');
-    ctx.fillStyle = gr; ctx.fillRect(left, top, w, waterTop - top + 4);
+    if (!fc.glowGrad){
+      fc.glowGrad = ctx.createRadialGradient(left + w / 2, waterTop, 1, left + w / 2, waterTop, w * 0.9);
+      fc.glowGrad.addColorStop(0, `rgba(255,178,96,${(c._glow * 0.45).toFixed(3)})`);
+      fc.glowGrad.addColorStop(1, 'rgba(255,178,96,0)');
+    }
+    ctx.fillStyle = fc.glowGrad; ctx.fillRect(left, top, w, waterTop - top + 4);
   }
   // stars (in the sky band only)
   if (c._starA > 0.02 && fc.stars.length){
@@ -652,7 +801,19 @@ function drawCell(fc, dt){
   }
   if (c.moon){
     const skyH = Math.max(2, waterTop - top);
-    drawMoonPhase(ctx, left + w * 0.5, top + skyH / 3, clamp(Math.min(w, skyH) * 0.224, 3.4, 9.1), c.moon.phase);
+    const r = clamp(Math.min(w, skyH) * 0.224, 3.4, 9.1);
+    // The moon never changes within a layout: pre-render its ~25-scanline phase
+    // mask to a small sprite once and blit it per frame.
+    if (!fc.moonSprite || fc.moonR !== r){
+      const scale = 3, size = Math.ceil((r + 1.5) * 2 * scale);
+      const cv = document.createElement('canvas'); cv.width = cv.height = size;
+      const mctx = cv.getContext('2d');
+      mctx.scale(scale, scale);
+      drawMoonPhase(mctx, size / (2 * scale), size / (2 * scale), r, c.moon.phase);
+      fc.moonSprite = cv; fc.moonR = r;
+    }
+    const size = fc.moonSprite.width / 3;
+    ctx.drawImage(fc.moonSprite, left + w * 0.5 - size / 2, top + skyH / 3 - size / 2, size, size);
   }
   // lightning flashes inside thunderstorm cells
   if (fc.thunder){
@@ -689,6 +850,11 @@ function drawCell(fc, dt){
   drawDelightBehindWater(fc);
   // black water surface (chop renderer chosen by CHOP_VERSION)
   drawWater(fc, waterTop);
+  // bite window: a quiet aquamarine underline in the water column
+  if (settings.bite === 'on' && c.biteOn){
+    ctx.fillStyle = `rgba(127,255,212,${(0.16 + 0.22 * Math.min(1, c.bite)).toFixed(3)})`;
+    ctx.fillRect(left + 1, bottom - 2.4, w - 2, 1.5);
+  }
   ctx.restore();
 }
 function drawWaterSeams(){
@@ -1122,7 +1288,9 @@ function drawSelectedDayTideLocators(ctx, di){
 }
 function drawNowLine(){
   const now = forecastNow();
-  const di = days.findIndex(d => d.isToday);
+  // Locate today by date key at draw time, so the line follows the clock past
+  // midnight instead of pointing at yesterday's row until a refetch lands.
+  const di = days.findIndex(d => (d.key ? d.key === now.key : d.isToday));
   if (di < 0) return;
   const fc = fx.cells.find(c => c.di === di && c.h === now.hour); if (!fc) return;
   const ctx = fx.ctx; ctx.save();
@@ -1458,102 +1626,67 @@ function frame(now){
   drawNowLine();
   drawSelectedCell();
   drawDelight();
+  // A delight finishing (or the tip closing) can leave a fully static scene —
+  // fall back to the idle repaint instead of burning 60fps on identical pixels.
+  if (!fx.animated && !fx.delights.length && !selectedCell){
+    fx.raf = 0;
+    scheduleStillRepaint();
+    return;
+  }
   fx.raf = requestAnimationFrame(frame);
+}
+/* Static scenes (still water, clear daytime week) skip the RAF loop entirely;
+ * a slow timer keeps the red now-line honest. */
+function scheduleStillRepaint(){
+  clearTimeout(fx.stillT);
+  fx.stillT = setTimeout(() => {
+    if (fx.raf || document.hidden) return;
+    fx.t = performance.now() / 1000;
+    drawFxStill();
+    scheduleStillRepaint();
+  }, 30000);
 }
 function startFx(){
   cancelAnimationFrame(fx.raf); fx.raf = 0;
+  clearTimeout(fx.stillT);
   if (!fx.cells.length){ fx.ctx?.clearRect(0, 0, fx.w, fx.h); return; }
-  if (reduceMotion.matches){ fx.t = 0; drawFxStill(); return; }
+  const animate = !reduceMotion.matches && (fx.animated || fx.delights.length > 0 || !!selectedCell);
+  if (!animate){
+    fx.t = reduceMotion.matches ? 0 : performance.now() / 1000;
+    drawFxStill();
+    scheduleStillRepaint();
+    return;
+  }
   fx.last = performance.now(); fx.raf = requestAnimationFrame(frame);
 }
 document.addEventListener('visibilitychange', () => {
   if (document.hidden){
     cancelAnimationFrame(fx.raf);
     fx.raf = 0;
+    clearTimeout(fx.stillT);
     return;
   }
   startFx();
   if (lastCoords && Date.now() - lastLoadedAt > 10 * 60 * 1000) load(lastCoords.lat, lastCoords.lon);
 });
+// Mid-session reduce-motion toggle: stop (or restart) the loop immediately.
+reduceMotion.addEventListener?.('change', () => startFx());
 
-/* ---------- Movable popups: drag to reposition; double-tap or long-press to reset ---------- */
-function clampPopupPoint(el, x, y){
-  const r = el.getBoundingClientRect(), m = 8;
-  const halfW = Math.min(r.width / 2 || 0, Math.max(0, innerWidth / 2 - m));
-  const halfH = Math.min(r.height / 2 || 0, Math.max(0, innerHeight / 2 - m));
-  return { x: Math.max(m + halfW, Math.min(innerWidth - m - halfW, x)), y: Math.max(m + halfH, Math.min(innerHeight - m - halfH, y)) };
-}
-function setPopupPoint(el, x, y){ const p = clampPopupPoint(el, x, y); el.style.left = p.x + 'px'; el.style.top = p.y + 'px'; el.style.right = 'auto'; el.style.bottom = 'auto'; el.style.transform = 'translate(-50%,-50%)'; }
+/* ---------- Movable popups: shared dragger bound to this app's settings ---------- */
+const { setPopupPoint, keepPopupOffRect } = AppCore;
 function applyPopupPosition(kind, el){ const s = settings.popupPos?.[kind]; if (s) setPopupPoint(el, s.x * innerWidth, s.y * innerHeight); }
-function resetPopupPosition(kind, el){ delete settings.popupPos[kind]; saveSettings(); el.style.left = el.style.top = el.style.right = el.style.bottom = el.style.transform = ''; }
-function rectsOverlap(a, b, pad = 0){
-  return a.left < b.right + pad && a.right > b.left - pad && a.top < b.bottom + pad && a.bottom > b.top - pad;
-}
-function keepPopupOffRect(el, avoidRect){
-  if (!avoidRect) return;
-  let pr = el.getBoundingClientRect();
-  if (!rectsOverlap(pr, avoidRect, 8)) return;
-  const current = { x: pr.left + pr.width / 2, y: pr.top + pr.height / 2 };
-  const gap = 12, cx = avoidRect.left + avoidRect.width / 2, cy = avoidRect.top + avoidRect.height / 2;
-  const raw = [
-    { x: cx, y: avoidRect.top - pr.height / 2 - gap },
-    { x: cx, y: avoidRect.bottom + pr.height / 2 + gap },
-    { x: avoidRect.left - pr.width / 2 - gap, y: cy },
-    { x: avoidRect.right + pr.width / 2 + gap, y: cy },
-    { x: avoidRect.left - pr.width / 2 - gap, y: avoidRect.top - pr.height / 2 - gap },
-    { x: avoidRect.right + pr.width / 2 + gap, y: avoidRect.top - pr.height / 2 - gap },
-    { x: avoidRect.left - pr.width / 2 - gap, y: avoidRect.bottom + pr.height / 2 + gap },
-    { x: avoidRect.right + pr.width / 2 + gap, y: avoidRect.bottom + pr.height / 2 + gap },
-  ];
-  const choices = raw.map(p => {
-    const c = clampPopupPoint(el, p.x, p.y);
-    const r = { left: c.x - pr.width / 2, right: c.x + pr.width / 2, top: c.y - pr.height / 2, bottom: c.y + pr.height / 2 };
-    return { ...c, overlaps: rectsOverlap(r, avoidRect, 8), dist: Math.hypot(c.x - current.x, c.y - current.y) };
+function popupDragger(kind, el, opts = {}){
+  return AppCore.makeDraggablePopup({
+    el,
+    getSaved: () => settings.popupPos?.[kind] || null,
+    save: p => { if (p) settings.popupPos[kind] = p; else delete settings.popupPos[kind]; saveSettings(); },
+    ...opts,
   });
-  const best = choices.filter(c => !c.overlaps).sort((a, b) => a.dist - b.dist)[0] || choices.sort((a, b) => b.dist - a.dist)[0];
-  if (best) setPopupPoint(el, best.x, best.y);
-}
-function makeDraggablePopup(kind, el, afterDrag, beforeDrag, onTap){
-  let drag = null, lastTap = 0, holdTimer = 0; const SLOP = 8, HOLD = 650;
-  el.addEventListener('pointerdown', e => {
-    if (e.button != null && e.button !== 0) return;
-    beforeDrag?.();
-    const r = el.getBoundingClientRect();
-    drag = { sx: e.clientX, sy: e.clientY, dx: e.clientX - (r.left + r.width / 2), dy: e.clientY - (r.top + r.height / 2), moved: false, reset: false };
-    clearTimeout(holdTimer);
-    holdTimer = setTimeout(() => { if (!drag || drag.moved) return; resetPopupPosition(kind, el); drag.reset = true; lastTap = 0; }, HOLD);
-    el.classList.add('dragging'); el.setPointerCapture?.(e.pointerId); e.preventDefault(); e.stopPropagation();
-  });
-  el.addEventListener('pointermove', e => {
-    if (!drag) return;
-    if (drag.reset){ e.preventDefault(); e.stopPropagation(); return; }
-    if (Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) > SLOP){ drag.moved = true; clearTimeout(holdTimer); }
-    if (!drag.moved){ e.preventDefault(); e.stopPropagation(); return; }
-    setPopupPoint(el, e.clientX - drag.dx, e.clientY - drag.dy); e.preventDefault(); e.stopPropagation();
-  });
-  function finish(e){
-    if (!drag) return; clearTimeout(holdTimer);
-    const now = performance.now(), dbl = !onTap && !drag.moved && now - lastTap < 320;
-    const tapped = !drag.moved && !drag.reset && !dbl;
-    if (drag.reset){ /* already reset by long-press */ }
-    else if (tapped && onTap) onTap();
-    else if (dbl) resetPopupPosition(kind, el);
-    else { const r = el.getBoundingClientRect(); settings.popupPos[kind] = { x: (r.left + r.width / 2) / innerWidth, y: (r.top + r.height / 2) / innerHeight }; saveSettings(); }
-    el.classList.remove('dragging'); el.releasePointerCapture?.(e.pointerId);
-    const moved = drag.moved, reset = drag.reset; drag = null; lastTap = reset || dbl || moved ? 0 : now;
-    afterDrag?.(moved); e.preventDefault(); e.stopPropagation();
-  }
-  el.addEventListener('pointerup', finish); el.addEventListener('pointercancel', finish);
-  el.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); });
 }
 
 /* ---------- Grid gestures: tap → readout; horizontal swipe → preview/cycle locations ---------- */
-const tipEl = $('#tip'); let tipTimer = 0, suppressTipGridClickUntil = 0, selectedCell = null;
-let gX = 0, gY = 0, swiped = false, pointerActive = false, dragAxis = null, dragOff = 0, dragSize = 0, slideCleanupT = 0, pendingFinish = null;
-let ghostPrev = null, ghostNext = null;
-const SWIPE_EASE = 'cubic-bezier(.22,.61,.36,1)';
+const tipEl = $('#tip'); let tipTimer = 0, selectedCell = null;
 const fxEls = () => [fx.canvas].filter(Boolean);
-function fxVisible(on){ for (const el of fxEls()) el.style.opacity = on ? '' : '0'; }
 function cycleList(){
   const list = [null];
   settings.places.forEach((_, i) => list.push(i));
@@ -1623,7 +1756,7 @@ function buildGhost(data){
   });
   return el;
 }
-function mountGhost(data, rect, side){
+function mountGhost(data, rect){
   const el = buildGhost(data || placeholderDays());
   if (!data) el.classList.add('loading');
   el.style.setProperty('--dayfs', gridEl.style.getPropertyValue('--dayfs'));
@@ -1632,107 +1765,28 @@ function mountGhost(data, rect, side){
     position: 'fixed', left: rect.left + 'px', top: rect.top + 'px',
     width: rect.width + 'px', height: rect.height + 'px',
     margin: '0', zIndex: '5', pointerEvents: 'none',
-    transform: `translate3d(${side * dragSize}px,0,0)`,
   });
   document.body.appendChild(el);
   return el;
 }
-function buildCarousel(){
-  const rect = gridEl.getBoundingClientRect();
-  dragSize = rect.width;
-  ghostPrev = mountGhost(neighborPreview(-1), rect, -1);
-  ghostNext = mountGhost(neighborPreview(1), rect, 1);
-}
-function destroyGhosts(){ ghostPrev?.remove(); ghostNext?.remove(); ghostPrev = ghostNext = null; }
-function slideTransform(el, px, ms){
-  el.style.transition = ms ? `transform ${ms}ms ${SWIPE_EASE}` : 'none';
-  el.style.transform = `translate3d(${px}px,0,0)`;
-}
-function applyDrag(off, ms){
-  for (const el of [gridEl, ...fxEls()]) slideTransform(el, off, ms);
-  if (ghostPrev) slideTransform(ghostPrev, -dragSize + off, ms);
-  if (ghostNext) slideTransform(ghostNext, dragSize + off, ms);
-}
-function resetSlide(){
-  dragAxis = null;
-  gridEl.classList.remove('swiping');
-  for (const el of [gridEl, ...fxEls()]){ el.style.transition = ''; el.style.transform = ''; }
-  destroyGhosts(); fxVisible(true); pendingFinish = null;
-}
-function slideCommit(dir){
-  const IN = 140;
-  fxVisible(false);
-  applyDrag(dir < 0 ? -dragSize : dragSize, IN);
-  pendingFinish = () => {
-    pendingFinish = null;
-    cycleLocation(dir < 0 ? 1 : -1);
-    resetSlide();
-    layoutFx();
-  };
-  clearTimeout(slideCleanupT);
-  slideCleanupT = setTimeout(() => pendingFinish && pendingFinish(), IN + 10);
-}
-gridEl.addEventListener('pointerdown', e => {
-  pointerActive = true;
-  clearTimeout(slideCleanupT);
-  if (pendingFinish) pendingFinish();
-  else if (ghostPrev || ghostNext) resetSlide();
-  swiped = false; dragAxis = null; dragOff = 0; gX = e.clientX; gY = e.clientY;
-  dragSize = gridEl.clientWidth;
-});
-gridEl.addEventListener('pointermove', e => {
-  if (!pointerActive) return;
-  const dx = e.clientX - gX, dy = e.clientY - gY;
-  if (!dragAxis){
-    if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
-    gridEl.classList.add('swiping');
-    try { gridEl.setPointerCapture(e.pointerId); } catch {}
-    if (Math.abs(dx) < Math.abs(dy) * 1.25){ dragAxis = 'y'; swiped = true; destroyGhosts(); return; }
-    dragAxis = 'x';
-    swiped = true;
-    hideTip();
-    if (canSwipe()) buildCarousel();
-  }
-  if (dragAxis !== 'x'){ resetSlide(); return; }
-  let off = dx;
-  if (!canSwipe()) off *= 0.2;
-  dragOff = off;
-  applyDrag(off, 0);
-});
-function endGridDrag(e){
-  if (!pointerActive) return;
-  pointerActive = false;
-  try { gridEl.releasePointerCapture(e.pointerId); } catch {}
-  if (!dragAxis){
-    destroyGhosts();
-    // Use the live cell under the release point. During a swipe commit the grid
-    // may be replaced after pointerdown, which makes the subsequent click vanish.
-    const c = document.elementFromPoint(e.clientX, e.clientY)?.closest('.cell');
-    if (c && gridEl.contains(c) && !c.classList.contains('empty')){
-      suppressTipGridClickUntil = performance.now() + 350;
-      showTip(+c.dataset.di, +c.dataset.h, c);
-    }
-    return;
-  }
-  // Mobile browsers do not always emit a click after a drag. Keep `swiped` long
-  // enough to consume a synthetic swipe-click, then disarm it before a real tap.
-  setTimeout(() => { swiped = false; }, 0);
-  if (dragAxis !== 'x') return;
-  const off = dragOff;
-  if (canSwipe() && Math.abs(off) > Math.min(90, dragSize * 0.22)) slideCommit(off < 0 ? -1 : 1);
-  else {
-    applyDrag(0, 140);
-    clearTimeout(slideCleanupT);
-    slideCleanupT = setTimeout(resetSlide, 160);
-  }
-}
-gridEl.addEventListener('pointerup', endGridDrag);
-gridEl.addEventListener('pointercancel', endGridDrag);
-gridEl.addEventListener('click', e => {
-  if (performance.now() < suppressTipGridClickUntil) return;
-  if (swiped){ swiped = false; return; }                       // a swipe is not a tap
-  const c = e.target.closest('.cell'); if (!c || c.classList.contains('empty')) return;
-  showTip(+c.dataset.di, +c.dataset.h, c);
+// Drag/commit/tap mechanics come from AppCore.createGridCarousel. Ebb only
+// swipes horizontally; a vertical drag is a dead gesture (fixed here: the old
+// hand-rolled version re-detected the axis every move and could misread a big
+// vertical drag as a tap on release).
+const carousel = AppCore.createGridCarousel({
+  gridEl,
+  fxEls,
+  axes: () => ['x'],
+  canSwipe: () => canSwipe(),
+  mountGhost: (axis, dir, rect) => mountGhost(neighborPreview(dir), rect),
+  onCommit: (axis, dir) => {
+    const cycleDir = dir < 0 ? 1 : -1;       // swipe left → next location
+    const nd = neighborPreview(cycleDir);    // warm data for the target, matching the ghost
+    cycleLocation(cycleDir);                 // switch + start the background refresh
+    if (nd){ days = nd; resetDelight(); render(); gridEl.classList.remove('loading'); }
+    else if (!days.length || !currentForecastMeta) showLoadingScaffold();
+  },
+  onTap: c => showTip(+c.dataset.di, +c.dataset.h, c),
 });
 document.addEventListener('click', e => { if (!e.target.closest('.cell') && !e.target.closest('.tip')) hideTip(); }, true);
 function cycleLocation(dir){
@@ -1743,7 +1797,7 @@ function cycleLocation(dir){
 }
 function hideTip(){
   clearTimeout(tipTimer); tipEl.hidden = true; selectedCell = null;
-  if (reduceMotion.matches) startFx();
+  startFx();                                 // may idle the loop again if the scene is static
 }
 // After a re-render (location change, tide fill-in), re-pin an open popup to the same
 // cell so it shows the current location's data — or hide it if that cell is gone.
@@ -1755,10 +1809,11 @@ function refreshTip(){
   else hideTip();
 }
 function dismissTipFromPopup(){
-  suppressTipGridClickUntil = performance.now() + 450;
+  carousel.suppressTaps(450);
   setTimeout(hideTip, 0);
 }
 function showTip(di, h, el){
+  if (gridEl.classList.contains('loading')) return;   // placeholder cells carry fabricated data — don't present it
   const c = days[di]?.cells[h]; if (!c) return;
   selectedCell = { di, h };
   const d = days[di];
@@ -1776,6 +1831,9 @@ function showTip(di, h, el){
   const mark = c.tideMark
     ? `<span class="tip-event">${c.tideMark.type === 'H' ? 'High' : 'Low'} tide · ${fmtClockMinute(h, c.tideMark.minute || 0)}</span>`
     : '';
+  const bite = settings.bite === 'on' && c.biteOn && c.biteWhy?.length
+    ? `<span class="tip-bite">🎣 Bite window · ${escapeHtml(c.biteWhy.join(' + '))}</span>`
+    : '';
   const facts = [
     `Wind${c.windDir != null ? ' ' + compass8(c.windDir) : ''} ${Math.round(c.windMph)} mph`,
   ];
@@ -1784,7 +1842,7 @@ function showTip(di, h, el){
   else facts.push('Dry');
   facts.push(`${c.cloud | 0}% cloud`);
   if (c.tF != null) facts.push(`${Math.round(c.tF)}°`);
-  tipEl.innerHTML = head + tide + mark
+  tipEl.innerHTML = head + tide + mark + bite
     + `<span class="tip-facts">${facts.map(v => `<span>${v}</span>`).join('')}</span>`;
   tipEl.classList.remove('top');
   const cellH = gridEl.querySelector('.cell:not(.empty)')?.getBoundingClientRect().height || 0;
@@ -1792,104 +1850,46 @@ function showTip(di, h, el){
   tipEl.hidden = false;
   applyPopupPosition('tip', tipEl);                            // honor a saved dragged position
   keepPopupOffRect(tipEl, el?.getBoundingClientRect());
-  if (reduceMotion.matches) startFx();
+  startFx();                                 // selection pulse needs the loop (or a fresh still frame)
   clearTimeout(tipTimer); tipTimer = setTimeout(hideTip, 15000);
 }
-makeDraggablePopup('tip', tipEl, () => { clearTimeout(tipTimer); if (!tipEl.hidden) tipTimer = setTimeout(hideTip, 15000); }, () => clearTimeout(tipTimer), dismissTipFromPopup);
+popupDragger('tip', tipEl, {
+  beforeDrag: () => clearTimeout(tipTimer),
+  afterDrag: () => { clearTimeout(tipTimer); if (!tipEl.hidden) tipTimer = setTimeout(hideTip, 15000); },
+  onTap: dismissTipFromPopup,
+});
 
 /* ---------- Settings sheet ---------- */
 const sheetEl = $('#settings');
-let shareFile = null, shareRevision = 0, shareBuiltRevision = -1;
-let sharePreparing = false;
-function setShareButtonReady(ready){
-  const button = $('#shareView');
-  button.disabled = !ready;
-}
 function shareDataReady(){
   return !!currentForecastMeta && days.some(day => day.cells.some(cell => cell?.tideFt != null));
 }
-function invalidateShare(){
-  shareRevision++;
-  shareFile = null;
-  shareBuiltRevision = -1;
-  setShareButtonReady(false);
-  if (!sheetEl.hidden) setTimeout(() => { if (!sheetEl.hidden) prepareShare(); }, 0);
-}
-async function prepareShare(){
-  if (!shareDataReady() || gridEl.classList.contains('loading')){
-    setShareButtonReady(false);
-    return;
-  }
-  if (shareFile && shareBuiltRevision === shareRevision){
-    setShareButtonReady(true);
-    return;
-  }
-  if (sharePreparing) return;
-  const revision = shareRevision;
-  sharePreparing = true;
-  try {
-    const file = await AppCore.createGridSnapshotFile({
-      grid: gridEl,
-      overlays: [fx.canvas],
-      appName: 'Ebb',
-      placeName: place.name,
-      filenamePrefix: 'ebb',
-      snapshotClass: 'snapshot-no-cell-borders',
-      beforeCapture: async () => {
-        gridEl.classList.add('snapshot-rendering');
-        cancelAnimationFrame(fx.raf); fx.raf = 0;
-        layoutFx();
-        drawFxStill();
-      },
-      afterCapture: async () => {
-        gridEl.classList.remove('snapshot-rendering');
-        layoutFx();
-      },
-    });
-    if (revision !== shareRevision) return;
-    shareFile = file;
-    shareBuiltRevision = revision;
-    setShareButtonReady(true);
-  } catch (err) {
-    if (revision !== shareRevision) return;
-    console.warn(err);
-  } finally {
-    sharePreparing = false;
-    if (revision !== shareRevision && !sheetEl.hidden){
-      setTimeout(() => { if (!sheetEl.hidden) prepareShare(); }, 0);
-    }
-  }
-}
+// The snapshot is built on the first Share tap (not on every sheet open).
+// layoutFx({ still: true }) parks the animation on a drawn frame instead of the
+// old cancel-then-immediately-restart, so the capture really is a still.
+const shareManager = AppCore.createShareManager({
+  button: $('#shareView'),
+  grid: gridEl,
+  appName: 'Ebb',
+  url: 'https://dsparks.github.io/24x7/ebb.html',
+  filenamePrefix: 'ebb',
+  snapshotClass: 'snapshot-no-cell-borders',
+  overlays: () => [fx.canvas],
+  placeName: () => place.name,
+  ready: () => shareDataReady() && !gridEl.classList.contains('loading'),
+  beforeCapture: async () => { gridEl.classList.add('snapshot-rendering'); layoutFx({ still: true }); },
+  afterCapture: async () => { gridEl.classList.remove('snapshot-rendering'); layoutFx(); },
+  onShareStart: () => { closeSheet(); hideTip(); },
+});
+function invalidateShare(){ shareManager.invalidate(); }
 function openSheet(){
   syncSheet();
   sheetEl.hidden = false;
-  if (shareFile && shareBuiltRevision === shareRevision) setShareButtonReady(true);
-  else { setShareButtonReady(false); prepareShare(); }
+  shareManager.sync();
 }
 function closeSheet(){ sheetEl.hidden = true; }
 sheetEl.addEventListener('click', e => { if (e.target.dataset.close !== undefined) closeSheet(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !sheetEl.hidden) closeSheet(); });
-$('#shareView').addEventListener('click', async () => {
-  const button = $('#shareView');
-  if (!shareFile) return;
-  button.disabled = true;
-  closeSheet();
-  hideTip();
-  try {
-    await AppCore.shareSnapshotFile(shareFile, {
-      appName: 'Ebb',
-      placeName: place.name,
-      url: 'https://dsparks.github.io/24x7/ebb.html',
-    });
-  } catch (err) {
-    if (err?.name !== 'AbortError'){
-      console.warn(err);
-      AppCore.showToast('Couldn’t create the screenshot');
-    }
-  } finally {
-    button.disabled = false;
-  }
-});
 function syncSheet(){
   $('#placeName').textContent = place.name; $('#placeSub').textContent = place.sub || '';
   document.querySelectorAll('.seg').forEach(seg => { const v = String(settings[seg.dataset.setting]); seg.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.value === v)); });
@@ -2032,8 +2032,16 @@ function addTestPlace(){ testForecastCache = null; let i = settings.places.findI
 
 /* ---------- Geolocation ---------- */
 function locate(intent = ++locationIntent){
+  // When a usable forecast is already on screen (boot painted the cached last
+  // location and its refresh may already have landed), a denied/unavailable
+  // geolocation must not stomp the header with "Location blocked".
+  const failQuietlyIfShowingData = () => {
+    if (!currentForecastMeta) return false;
+    if (place.name === 'Last location' || place.name === 'Locating...') setPlace('Last known location', 'Search in settings to change');
+    return true;
+  };
   if (!('geolocation' in navigator)){
-    if (intent === locationIntent){
+    if (intent === locationIntent && !failQuietlyIfShowingData()){
       setPlace('Location unavailable', 'Search in settings');
       gridEl.classList.remove('loading');
       $('#updatedAt').textContent = 'Choose a location';
@@ -2050,7 +2058,7 @@ function locate(intent = ++locationIntent){
       reverseName(myCoords.lat, myCoords.lon, intent).then(p => { if (p) myPlace = p; });
     },
     () => {
-      if (intent !== locationIntent) return;
+      if (intent !== locationIntent || failQuietlyIfShowingData()) return;
       setPlace('Location blocked', 'Search in settings ⚙');
       gridEl.classList.remove('loading');
       $('#updatedAt').textContent = 'Choose a location';
@@ -2125,7 +2133,7 @@ function boot(){
   if (active){
     if (cacheMatches(cache, active.lat, active.lon)){
       applyForecast(cache.json, active.lat, active.lon, cache.t, 'cached');
-      applySimulatedTides(active.lon, 'Tide: simulated until NOAA refreshes');
+      if (!applyCachedTides(cache)) applySimulatedTides(active.lon, 'Tide: simulated until NOAA refreshes');
       render();
     } else {
       showLoadingScaffold();
@@ -2135,7 +2143,7 @@ function boot(){
   }
   if (cache?.json && cache.lat != null && cache.lon != null){
     applyForecast(cache.json, cache.lat, cache.lon, cache.t, 'cached');
-    applySimulatedTides(cache.lon, 'Tide: simulated until location updates');
+    if (!applyCachedTides(cache)) applySimulatedTides(cache.lon, 'Tide: simulated until location updates');
     render();
     setPlace('Last location', 'Updating current location...');
     load(cache.lat, cache.lon);

@@ -207,13 +207,20 @@ body.desktop-frame::after{
   z-index:3;
 }
 
-/* loading shimmer */
-.grid.loading .cell{
-  background:linear-gradient(100deg,#11151c 30%,#1b212b 50%,#11151c 70%);
-  background-size:200% 100%;
+/* loading shimmer — ONE transform-animated overlay (compositable) instead of
+   animating background-position on 168 cells, which rasterized the whole
+   viewport every frame. */
+.grid.loading .cell{background:#11151c}
+.grid.loading::after{
+  content:"";
+  position:absolute;inset:0;
+  z-index:2;pointer-events:none;
+  background:linear-gradient(100deg,transparent 34%,rgba(255,255,255,.05) 50%,transparent 66%);
+  transform:translateX(-100%);
   animation:sh 1.2s linear infinite;
+  will-change:transform;
 }
-@keyframes sh{to{background-position:-200% 0}}
+@keyframes sh{to{transform:translateX(100%)}}
 
 /* ---------- Tap readout ---------- */
 .tip{
@@ -235,7 +242,8 @@ body.desktop-frame::after{
   max-width:min(92vw,420px);
   text-align:center;
 }
-.tip.dragging{cursor:grabbing}
+/* while dragging, skip the backdrop re-blur per frame (mobile GPUs pay for it) */
+.tip.dragging{cursor:grabbing;backdrop-filter:none}
 /* portrait: float over the wee-hours rows (top) instead of the relevant evening rows */
 .tip.top{bottom:auto;top:calc(clamp(64px,11vh,150px) - var(--tip-shift,0px))}
 .tip b{font-weight:700}
@@ -266,7 +274,7 @@ body.desktop-frame::after{
   cursor:grab;
   user-select:none;
 }
-.legend.dragging{cursor:grabbing}
+.legend.dragging{cursor:grabbing;backdrop-filter:none}
 .legend[hidden]{display:none}
 .legend .legend-place,.legend .legend-title{display:block;width:100%;text-align:center;line-height:1;white-space:nowrap}
 .legend .legend-place{overflow:hidden;text-overflow:ellipsis;font-size:11px;color:var(--ink);font-weight:700}
@@ -423,3 +431,11 @@ svg.curve{width:100%;height:auto;display:block;background:#0e1218;border:1px sol
 
 .sheet-foot{display:flex;align-items:center;gap:.4rem;justify-content:center;color:var(--muted);font-size:.78rem;margin-top:1.1rem}
 .sheet-foot .dot{opacity:.5}
+
+/* ---------- Reduced motion: still every CSS animation (canvas fx handle this in JS) */
+@media (prefers-reduced-motion:reduce){
+  .grid.loading::after{animation:none;display:none}
+  .sw-arrows{animation:none}
+  .coach{animation:none}
+  .sheet-card{animation:none}
+}

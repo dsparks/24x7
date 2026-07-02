@@ -184,12 +184,14 @@ const isFreezingRain = cell => !!cell && FREEZING_RAIN_CODES.has(cell.wcode);
 function precipKind(cell){
   if (!cell) return null;
   const pop = cell.pop || 0;
-  if (pop <= 10) return null;
-  const inch = mmToIn(cell.precip || 0);
-  const isSnow = (cell.snow || 0) > 0;
   const thunder = isThunder(cell);
   const freezing = isFreezingRain(cell);
-  if (pop <= 0 && inch <= 0 && !thunder && !freezing) return null;   // nothing to show
+  // Low-probability hours are usually not worth labeling — but a coded
+  // thunderstorm or freezing rain IS, even at 5% pop. Animation stays gated on
+  // pop > 10 at the call sites; this only keeps the label/level available.
+  if (pop <= 10 && !thunder && !freezing) return null;
+  const inch = mmToIn(cell.precip || 0);
+  const isSnow = (cell.snow || 0) > 0;
   let level;
   if (isSnow){
     const r = inch * 10;                          // ~liquid→snow ratio
@@ -271,151 +273,19 @@ const gridEl = $('#grid');
 const tipEl = $('#tip');
 const sheetEl = $('#settings');
 
-function clampPopupPoint(el, x, y){
-  const r = el.getBoundingClientRect();
-  const margin = 8;
-  const halfW = Math.min(r.width / 2 || 0, Math.max(0, innerWidth / 2 - margin));
-  const halfH = Math.min(r.height / 2 || 0, Math.max(0, innerHeight / 2 - margin));
-  return {
-    x: Math.max(margin + halfW, Math.min(innerWidth - margin - halfW, x)),
-    y: Math.max(margin + halfH, Math.min(innerHeight - margin - halfH, y)),
-  };
-}
-function setPopupPoint(el, x, y){
-  const p = clampPopupPoint(el, x, y);
-  el.style.left = p.x + 'px';
-  el.style.top = p.y + 'px';
-  el.style.right = 'auto';
-  el.style.bottom = 'auto';
-  el.style.transform = 'translate(-50%,-50%)';
-}
+/* Popup dragging (move / long-press reset / double-tap reset) lives in AppCore;
+ * these wrappers bind it to this app's settings.popupPos persistence. */
+const { setPopupPoint, keepPopupOffRect } = AppCore;
 function applyPopupPosition(kind, el, fallback){
   const saved = settings.popupPos?.[kind] || fallback;
-  if (!saved) return;
-  setPopupPoint(el, saved.x * innerWidth, saved.y * innerHeight);
+  if (saved) setPopupPoint(el, saved.x * innerWidth, saved.y * innerHeight);
 }
-function rectsOverlap(a, b, pad = 0){
-  return a.left < b.right + pad && a.right > b.left - pad && a.top < b.bottom + pad && a.bottom > b.top - pad;
-}
-function keepPopupOffRect(el, avoidRect){
-  if (!avoidRect) return;
-  let pr = el.getBoundingClientRect();
-  if (!rectsOverlap(pr, avoidRect, 8)) return;
-  const current = { x: pr.left + pr.width / 2, y: pr.top + pr.height / 2 };
-  const gap = 12, cx = avoidRect.left + avoidRect.width / 2, cy = avoidRect.top + avoidRect.height / 2;
-  const raw = [
-    { x: cx, y: avoidRect.top - pr.height / 2 - gap },
-    { x: cx, y: avoidRect.bottom + pr.height / 2 + gap },
-    { x: avoidRect.left - pr.width / 2 - gap, y: cy },
-    { x: avoidRect.right + pr.width / 2 + gap, y: cy },
-    { x: avoidRect.left - pr.width / 2 - gap, y: avoidRect.top - pr.height / 2 - gap },
-    { x: avoidRect.right + pr.width / 2 + gap, y: avoidRect.top - pr.height / 2 - gap },
-    { x: avoidRect.left - pr.width / 2 - gap, y: avoidRect.bottom + pr.height / 2 + gap },
-    { x: avoidRect.right + pr.width / 2 + gap, y: avoidRect.bottom + pr.height / 2 + gap },
-  ];
-  const choices = raw.map(p => {
-    const c = clampPopupPoint(el, p.x, p.y);
-    const r = { left: c.x - pr.width / 2, right: c.x + pr.width / 2, top: c.y - pr.height / 2, bottom: c.y + pr.height / 2 };
-    return { ...c, overlaps: rectsOverlap(r, avoidRect, 8), dist: Math.hypot(c.x - current.x, c.y - current.y) };
-  });
-  const best = choices.filter(c => !c.overlaps).sort((a, b) => a.dist - b.dist)[0] || choices.sort((a, b) => b.dist - a.dist)[0];
-  if (best) setPopupPoint(el, best.x, best.y);
-}
-function resetPopupPosition(kind, el, fallback){
-  delete settings.popupPos[kind];
-  saveSettings();
-  if (fallback) setPopupPoint(el, fallback.x * innerWidth, fallback.y * innerHeight);
-  else {
-    el.style.left = '';
-    el.style.top = '';
-    el.style.right = '';
-    el.style.bottom = '';
-    el.style.transform = '';
-  }
-}
-function makeDraggablePopup(kind, el, afterDrag, beforeDrag, fallback, onTap){
-  let drag = null, lastTap = 0, holdTimer = 0;
-  const TAP_SLOP = 8;
-  const HOLD_MS = 650;
-  el.addEventListener('pointerdown', e => {
-    if (e.button != null && e.button !== 0) return;
-    beforeDrag?.();
-    const r = el.getBoundingClientRect();
-    drag = {
-      sx: e.clientX,
-      sy: e.clientY,
-      dx: e.clientX - (r.left + r.width / 2),
-      dy: e.clientY - (r.top + r.height / 2),
-      moved: false,
-      reset: false,
-    };
-    clearTimeout(holdTimer);
-    holdTimer = setTimeout(() => {
-      if (!drag || drag.moved) return;
-      resetPopupPosition(kind, el, fallback);
-      drag.reset = true;
-      lastTap = 0;
-    }, HOLD_MS);
-    el.classList.add('dragging');
-    el.setPointerCapture?.(e.pointerId);
-    e.preventDefault();
-    e.stopPropagation();
-  });
-  el.addEventListener('pointermove', e => {
-    if (!drag) return;
-    if (drag.reset){
-      e.preventDefault();
-      e.stopPropagation();
-      return;
-    }
-    const dist = Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy);
-    if (dist > TAP_SLOP){
-      drag.moved = true;
-      clearTimeout(holdTimer);
-    }
-    if (!drag.moved){
-      e.preventDefault();
-      e.stopPropagation();
-      return;
-    }
-    setPopupPoint(el, e.clientX - drag.dx, e.clientY - drag.dy);
-    e.preventDefault();
-    e.stopPropagation();
-  });
-  function finishDrag(e){
-    if (!drag) return;
-    clearTimeout(holdTimer);
-    const now = performance.now();
-    const doubleTap = !onTap && !drag.moved && now - lastTap < 320;
-    const tapped = !drag.moved && !drag.reset && !doubleTap;
-    if (drag.reset) {
-      // Already reset by long-press; just let the popup's normal timer resume.
-    } else if (tapped && onTap) {
-      onTap();
-    } else if (doubleTap) resetPopupPosition(kind, el, fallback);
-    else {
-      const r = el.getBoundingClientRect();
-      settings.popupPos[kind] = {
-        x: (r.left + r.width / 2) / innerWidth,
-        y: (r.top + r.height / 2) / innerHeight,
-      };
-      saveSettings();
-    }
-    el.classList.remove('dragging');
-    el.releasePointerCapture?.(e.pointerId);
-    const moved = drag.moved;
-    const reset = drag.reset;
-    drag = null;
-    lastTap = reset || doubleTap || moved ? 0 : now;
-    afterDrag?.(moved);
-    e.preventDefault();
-    e.stopPropagation();
-  }
-  el.addEventListener('pointerup', finishDrag);
-  el.addEventListener('pointercancel', finishDrag);
-  el.addEventListener('click', e => {
-    e.preventDefault();
-    e.stopPropagation();
+function popupDragger(kind, el, opts = {}){
+  return AppCore.makeDraggablePopup({
+    el,
+    getSaved: () => settings.popupPos?.[kind] || null,
+    save: p => { if (p) settings.popupPos[kind] = p; else delete settings.popupPos[kind]; saveSettings(); },
+    ...opts,
   });
 }
 function repositionVisiblePopups(){
@@ -435,6 +305,7 @@ function buildUrl(lat, lon){
     wind_speed_unit: 'mph',
     timezone: 'auto',
     forecast_days: '7',
+    timeformat: 'unixtime',   // epochs, not wall-clock ISO: exact across DST transitions
   });
   return `https://api.open-meteo.com/v1/forecast?${p}`;
 }
@@ -449,19 +320,31 @@ function fetchForecast(lat, lon){
   return request;
 }
 
-/* Parse Open-Meteo hourly arrays into day columns of 24 hours each. */
+/* Approximate solar declination (degrees) for a calendar day — good to ~1°,
+ * plenty to decide polar day vs polar night when sunrise/sunset are absent. */
+function solarDeclination(date){
+  const doy = Math.floor((date - new Date(date.getFullYear(), 0, 0)) / 86400000);
+  return -23.44 * Math.cos(2 * Math.PI * (doy + 10) / 365);
+}
+
+/* Parse Open-Meteo hourly arrays into day columns of 24 hours each.
+ * Fresh responses carry unixtime epochs (exact across DST); ISO strings from a
+ * pre-upgrade localStorage cache still parse via the legacy path. */
 function toDays(j){
   const h = j.hourly || {};
   const time = h.time || [];
+  const meta = forecastMeta(j);
+  const todayKey = forecastNow(meta).key;
+  const epochTime = typeof time[0] === 'number';
+  const wallParts = t => epochTime
+    ? AppCore.epochParts(t, meta)
+    : { key: t.slice(0, 10), hour: +t.slice(11, 13) };
   const byDate = new Map();
-  const todayKey = forecastNow(forecastMeta(j)).key;
 
   for (let i = 0; i < time.length; i++){
-    const iso = time[i];
-    const dateKey = iso.slice(0, 10);
-    const hour = +iso.slice(11, 13);
-    if (!byDate.has(dateKey)) byDate.set(dateKey, new Array(24).fill(null));
-    byDate.get(dateKey)[hour] = {
+    const p = wallParts(time[i]);
+    if (!byDate.has(p.key)) byDate.set(p.key, new Array(24).fill(null));
+    byDate.get(p.key)[p.hour] = {
       c: h.temperature_2m?.[i],
       pop: h.precipitation_probability?.[i] ?? 0,
       precip: h.precipitation?.[i] ?? 0,          // mm in this hour
@@ -473,28 +356,64 @@ function toDays(j){
       rh: h.relative_humidity_2m?.[i] ?? null,
       cloud: h.cloud_cover?.[i] ?? null,          // % cloud cover
       wcode: h.weather_code?.[i] ?? null,         // WMO weather code (95/96/99 = thunderstorm)
-      iso,
     };
   }
 
-  // daily sunrise/sunset, keyed by date → fractional hour of day (0–24)
+  // On a spring-forward day one wall-clock hour never happens; interpolate the
+  // gap from its neighbors so the grid doesn't show a black "no data" cell.
+  for (const cells of byDate.values()){
+    for (let hh = 1; hh < 23; hh++){
+      const a = cells[hh - 1], b = cells[hh + 1];
+      if (cells[hh] || !a || !b) continue;
+      const mid = (x, y) => (x == null || y == null) ? (x ?? y) : (x + y) / 2;
+      cells[hh] = {
+        c: mid(a.c, b.c), pop: Math.round(mid(a.pop, b.pop) ?? 0),
+        precip: mid(a.precip, b.precip) ?? 0, snow: mid(a.snow, b.snow) ?? 0,
+        appF: mid(a.appF, b.appF), dewF: mid(a.dewF, b.dewF),
+        windMph: mid(a.windMph, b.windMph), windDir: a.windDir ?? b.windDir,
+        rh: mid(a.rh, b.rh), cloud: mid(a.cloud, b.cloud), wcode: a.wcode ?? b.wcode,
+        synth: true,
+      };
+    }
+  }
+
+  // daily sunrise/sunset → fractional hour of day (0–24), keyed by date
   const dly = j.daily || {};
   const sun = new Map();
+  const sunHour = v => {
+    if (v == null) return null;
+    if (typeof v === 'number'){
+      const p = AppCore.epochParts(v, meta);
+      return p.hour + p.minute / 60;
+    }
+    return hourFromLocalIso(v);
+  };
   (dly.time || []).forEach((d, i) => {
-    sun.set(d, { riseH: hourFromLocalIso(dly.sunrise?.[i]), setH: hourFromLocalIso(dly.sunset?.[i]) });
+    const key = typeof d === 'number' ? AppCore.epochParts(d, meta).key : d;
+    sun.set(key, { riseH: sunHour(dly.sunrise?.[i]), setH: sunHour(dly.sunset?.[i]) });
   });
 
-  return [...byDate.entries()].slice(0, 7).map(([key]) => {
-    const d = new Date(key + 'T00:00:00');
+  const lat = Number(j.latitude);
+  return [...byDate.entries()].slice(0, 7).map(([key, cells]) => {
+    const [y, m, dd] = key.split('-').map(Number);
+    const d = new Date(y, m - 1, dd);
     const s = sun.get(key) || {};
+    // No sunrise/sunset → polar: decide midnight sun vs polar night from the
+    // sun's noon elevation (≈ 90 − |lat − declination|).
+    let polar = null;
+    if ((s.riseH == null || s.setH == null) && Number.isFinite(lat)){
+      polar = (90 - Math.abs(lat - solarDeclination(d))) <= 0 ? 'night' : 'day';
+    }
     return {
       date: d,
+      key,
       isToday: key === todayKey,
       dow: WD[d.getDay()],
       dnum: d.getDate(),
-      cells: byDate.get(key),
+      cells,
       riseH: s.riseH ?? null,     // sunrise as fractional hour, or null
       setH: s.setH ?? null,
+      polar,                      // 'day' | 'night' | null (normal day)
     };
   });
 }
@@ -506,7 +425,7 @@ function placeholderDays(){
   const base = new Date(); base.setHours(0,0,0,0);
   for (let i = 0; i < 7; i++){
     const d = new Date(base.getTime() + i*86400000);
-    out.push({ date:d, isToday:i===0, dow:WD[d.getDay()], dnum:d.getDate(), cells:new Array(24).fill(null) });
+    out.push({ date:d, key:ymd(d), isToday:i===0, dow:WD[d.getDay()], dnum:d.getDate(), cells:new Array(24).fill(null) });
   }
   return out;
 }
@@ -531,13 +450,18 @@ function applyDesktopFrame(){
 }
 function isPortrait(){ return desktopFrameEnabled() ? settings.desktopLayout !== 'landscape' : window.innerHeight >= window.innerWidth; }
 
-function cellRGB(cell, view = settings.view){
+// `runIdx` lets callers compute runIndex once per cell instead of once for the
+// color and again for the number (168 cells × 5 curve evaluations each render).
+function cellRGB(cell, view = settings.view, runIdx = null){
   if (!cell || cell.c == null) return [17,21,28];
-  return view === 'run' ? runRGB(runIndex(cell)) : tempRGB(cToF(cell.c));
+  return view === 'run' ? runRGB(runIdx ?? runIndex(cell)) : tempRGB(cToF(cell.c));
 }
-function cellNumber(cell, view = settings.view){
+function cellNumber(cell, view = settings.view, runIdx = null){
   if (!settings.showNumbers || !cell || cell.c == null) return null;
-  return view === 'run' ? String(runIndex(cell)) : String(Math.round(displayTemp(cell.c)));
+  return view === 'run' ? String(runIdx ?? runIndex(cell)) : String(Math.round(displayTemp(cell.c)));
+}
+function cellRunIdx(cell, view = settings.view){
+  return view === 'run' && cell && cell.c != null ? runIndex(cell) : null;
 }
 
 let nowFrac = 0;
@@ -552,7 +476,9 @@ function nowLineEl(){
 const TWI = 1.3;                          // twilight half-width (hours)
 function smoothstep(e0, e1, x){ const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t); }
 function darknessAt(day, t){
-  if (day?.riseH == null || day?.setH == null) return 0;
+  if (day?.riseH == null || day?.setH == null){
+    return day?.polar === 'night' ? settings.nightMax : 0;   // polar night is dark all day
+  }
   let ss = day.setH;
   if (ss <= day.riseH) ss += 24;            // polar summer: sunset is after midnight
   const dayness = smoothstep(day.riseH - TWI, day.riseH + TWI, t) * (1 - smoothstep(ss - TWI, ss + TWI, t));
@@ -587,9 +513,11 @@ function effInk(di, h, c){ return inkFor(days[di], h, c); }
 // Re-placeable current-time line: located by data-attrs after the grid is in the DOM.
 function placeNowLine(){
   gridEl.querySelectorAll('.nowline').forEach(n => n.remove());
-  const di = days.findIndex(d => d.isToday);
-  if (di < 0) return;
   const now = forecastNow();
+  // Locate today by date key at draw time, so the line follows the clock past
+  // midnight instead of staying on the day that was "today" at fetch time.
+  const di = days.findIndex(d => (d.key ? d.key === now.key : d.isToday));
+  if (di < 0) return;
   nowFrac = now.minute / 60;
   const cell = gridEl.querySelector(`.cell[data-di="${di}"][data-h="${now.hour}"]`);
   if (cell && !cell.classList.contains('empty')) cell.appendChild(nowLineEl());
@@ -656,7 +584,8 @@ function cellEl(di, h){
   el.dataset.di = di; el.dataset.h = h;
   if (!cell || cell.c == null){ el.classList.add('empty'); return el; }
 
-  const c = cellRGB(cell);
+  const runIdx = cellRunIdx(cell);
+  const c = cellRGB(cell, settings.view, runIdx);
   el.style.background = rgbStr(c);
   const ink = effInk(di, h, c);           // contrast vs the night-shaded color
 
@@ -670,7 +599,7 @@ function cellEl(di, h){
   const hot = !showPrecipFx && !windy && cToF(cell.c) >= 95;        // wind wins over shimmer on hot, dry, windy hours
   if (thunder || hot || windy) fx.fxCells.push({ el, di, hour: h, ink, thunder, hot, windy, wind: cell.windMph || 0, dir: cell.windDir });
 
-  const num = cellNumber(cell);
+  const num = cellNumber(cell, settings.view, runIdx);
   if (num != null){
     const t = document.createElement('span');
     t.className = 't';
@@ -685,7 +614,9 @@ function render(){
   if (!days.length) return;
   const portrait = isPortrait();
   orientation = portrait ? 'p' : 'l';
-  nowFrac = forecastNow().minute / 60;
+  const now = forecastNow();
+  nowFrac = now.minute / 60;
+  days.forEach(d => { if (d.key) d.isToday = d.key === now.key; });   // "today" tracks the clock, not fetch time
   const n = days.length;
   const frag = document.createDocumentFragment();
   gridEl.className = 'grid ' + orientation;
@@ -1173,16 +1104,13 @@ document.addEventListener('visibilitychange', () => {
   if (days.length) placeNowLine();
   if (lastCoords && Date.now() - lastLoadedAt > 10 * 60 * 1000) load(lastCoords.lat, lastCoords.lon);
 });
+// Mid-session reduce-motion toggle: stop (or restart) the loop immediately.
+reduceMotion.addEventListener?.('change', () => startFx());
 
 /* ---------- Tap-a-cell readout ---------- */
-let tipTimer = null, selEl = null, selDi = null, selH = null, suppressTipGridClickUntil = 0;
-gridEl.addEventListener('click', e => {
-  if (performance.now() < suppressTipGridClickUntil) return;
-  if (lpFired || swiped){ lpFired = false; swiped = false; return; }   // long-press/swipe: not a tap
-  const c = e.target.closest('.cell');
-  if (!c || c.classList.contains('empty')) return;
-  showTip(+c.dataset.di, +c.dataset.h, c);
-});
+let tipTimer = null, selEl = null, selDi = null, selH = null;
+// Tap handling lives in the shared grid carousel (created below): it filters out
+// swipes and long-presses, and resolves the tapped cell even mid-swipe-commit.
 
 /* ---------- Color legend ---------- */
 const legendEl = $('#legend');
@@ -1218,10 +1146,14 @@ function showLegend(){
   legendTimer = setTimeout(() => { legendEl.hidden = true; }, 4000);
 }
 
-makeDraggablePopup('legend', legendEl, () => {
-  clearTimeout(legendTimer);
-  legendTimer = setTimeout(() => { legendEl.hidden = true; }, 4000);
-}, () => clearTimeout(legendTimer), LEGEND_DEFAULT_POS);
+popupDragger('legend', legendEl, {
+  fallback: LEGEND_DEFAULT_POS,
+  beforeDrag: () => clearTimeout(legendTimer),
+  afterDrag: () => {
+    clearTimeout(legendTimer);
+    legendTimer = setTimeout(() => { legendEl.hidden = true; }, 4000);
+  },
+});
 
 // Flip between Temp/Rain and Run Index.
 function toggleView(){
@@ -1246,14 +1178,7 @@ function cycleLocation(dir){
 // completes (neighbor slides to centre, then becomes the real grid) or springs back.
 // Ghosts are static colour grids (no particle layer) built from the prefetched forecast
 // for an instant paint; an un-warmed neighbor falls back to a loading shimmer.
-let lpTimer = 0, lpFired = false, swiped = false, pointerActive = false, lpX = 0, lpY = 0;
-let dragAxis = null, dragOff = 0, dragSize = 0, slideCleanupT = 0, pendingFinish = null;
-let ghostPrev = null, ghostNext = null;
-const SWIPE_PREP_PX = 5;
-const SWIPE_START_PX = 10;
-const SWIPE_EASE = 'cubic-bezier(.22,.61,.36,1)';
 const fxEls = () => [fx.canvas, fx.wcanvas].filter(Boolean);
-function fxVisible(on){ for (const el of fxEls()) el.style.opacity = on ? '' : '0'; }
 function canSwipe(axis){ return axis === 'x' ? cycleList().length > 1 : true; }
 
 // One static, non-interactive colour grid for `data` painted in `view` — mirrors render()'s
@@ -1263,9 +1188,10 @@ function ghostCell(di, h, data, view){
   const el = document.createElement('div');
   el.className = 'cell'; el.dataset.di = di; el.dataset.h = h;
   if (!cell || cell.c == null){ el.classList.add('empty'); return el; }
-  const c = cellRGB(cell, view);
+  const runIdx = cellRunIdx(cell, view);
+  const c = cellRGB(cell, view, runIdx);
   el.style.background = rgbStr(c);
-  const num = cellNumber(cell, view);
+  const num = cellNumber(cell, view, runIdx);
   if (num != null){
     const t = document.createElement('span');
     t.className = 't'; t.style.color = inkFor(data[di], h, c); t.textContent = num;
@@ -1300,7 +1226,7 @@ function buildGhost(data, view){
   data.forEach((d, di) => { const s = dayShadeEl(d, di, portrait); if (s) el.appendChild(s); });
   return el;
 }
-function mountGhost(data, view, rect, side){
+function mountGhost(data, view, rect){
   const el = buildGhost(data || placeholderDays(), view);
   if (!data) el.classList.add('loading');     // un-warmed neighbor → shimmer rather than black
   el.style.setProperty('--dayfs', gridEl.style.getPropertyValue('--dayfs'));   // match fitted header sizes
@@ -1310,46 +1236,21 @@ function mountGhost(data, view, rect, side){
     width: rect.width + 'px', height: rect.height + 'px',
     margin: '0', zIndex: '5', pointerEvents: 'none',
   });
-  el.style.transform = dragAxis === 'x' ? `translate3d(${side * dragSize}px,0,0)` : `translate3d(0,${side * dragSize}px,0)`;
   document.body.appendChild(el);
   return el;
 }
-function buildCarousel(axis){
-  const rect = gridEl.getBoundingClientRect();
-  dragSize = axis === 'x' ? rect.width : rect.height;
-  let prevData, nextData, view = settings.view;
-  if (axis === 'x'){
-    prevData = neighborDays(-1); nextData = neighborDays(1);
-  } else {
-    view = settings.view === 'run' ? 'temp' : 'run';   // the other view, both sides
-    prevData = nextData = days;
-  }
-  ghostPrev = mountGhost(prevData, view, rect, -1);
-  ghostNext = mountGhost(nextData, view, rect, 1);
-}
-function destroyGhosts(){ ghostPrev?.remove(); ghostNext?.remove(); ghostPrev = ghostNext = null; }
-function slideTransform(el, px, ms){
-  el.style.transition = ms ? `transform ${ms}ms ${SWIPE_EASE}` : 'none';
-  el.style.transform = dragAxis === 'x' ? `translate3d(${px}px,0,0)` : `translate3d(0,${px}px,0)`;
-}
-// Move the live grid + canvases by `off`, and the two ghosts by their base ±size + off.
-function applyDrag(off, ms){
-  for (const el of [gridEl, ...fxEls()]) slideTransform(el, off, ms);
-  if (ghostPrev) slideTransform(ghostPrev, -dragSize + off, ms);
-  if (ghostNext) slideTransform(ghostNext, dragSize + off, ms);
-}
-function resetSlide(){
-  dragAxis = null;
-  gridEl.classList.remove('swiping');
-  for (const el of [gridEl, ...fxEls()]){ el.style.transition = ''; el.style.transform = ''; }
-  destroyGhosts(); fxVisible(true); pendingFinish = null;
-}
-function slideCommit(axis, dir){
-  const IN = 140;
-  fxVisible(false);                          // current pane's particles exit quietly
-  applyDrag(dir < 0 ? -dragSize : dragSize, IN);   // carry the target ghost to centre
-  pendingFinish = () => {                    // the actual switch; run by the timer OR a pre-empting touch
-    pendingFinish = null;
+// The drag/commit/tap mechanics live in AppCore.createGridCarousel; this wires
+// them to 24×7's data: x cycles locations, y flips Temp/Run.
+const carousel = AppCore.createGridCarousel({
+  gridEl,
+  fxEls,
+  axes: () => ['x', 'y'],
+  canSwipe,
+  mountGhost: (axis, dir, rect) => {
+    if (axis === 'x') return mountGhost(neighborDays(dir), settings.view, rect);
+    return mountGhost(days, settings.view === 'run' ? 'temp' : 'run', rect);   // the other view
+  },
+  onCommit: (axis, dir) => {
     if (axis === 'x'){
       const cycleDir = dir < 0 ? 1 : -1;     // swipe left → next location
       const nd = neighborDays(cycleDir);     // warm data for the target (real / my-location / test)
@@ -1359,79 +1260,10 @@ function slideCommit(axis, dir){
     } else {
       toggleView();                          // Temp/Run share data — already coloured
     }
-    resetSlide();                            // grid (now the new content) snaps to centre; ghosts gone
-    layoutFx();                              // realign + restart particles for the new pane
-  };
-  clearTimeout(slideCleanupT);
-  slideCleanupT = setTimeout(() => pendingFinish && pendingFinish(), IN + 10);
-}
-
-gridEl.addEventListener('pointerdown', e => {
-  pointerActive = true;
-  clearTimeout(slideCleanupT);
-  if (pendingFinish) pendingFinish();          // re-touch mid-commit → finish the switch, don't drop it
-  else if (ghostPrev || ghostNext) resetSlide();
-  lpFired = false; swiped = false; dragAxis = null; dragOff = 0;
-  lpX = e.clientX; lpY = e.clientY;
-  lpTimer = setTimeout(() => { lpFired = true; showLegend(); }, 480);
+  },
+  onTap: c => showTip(+c.dataset.di, +c.dataset.h, c),
+  onLongPress: showLegend,
 });
-gridEl.addEventListener('pointermove', e => {
-  if (!pointerActive) return;
-  const dx = e.clientX - lpX, dy = e.clientY - lpY;
-  if (!dragAxis){
-    if (lpFired) return;
-    if (Math.abs(dx) < SWIPE_PREP_PX && Math.abs(dy) < SWIPE_PREP_PX) return;
-    clearTimeout(lpTimer);
-    dragAxis = Math.abs(dx) >= Math.abs(dy) ? 'x' : 'y';
-    dragSize = dragAxis === 'x' ? gridEl.clientWidth : gridEl.clientHeight;
-    if (canSwipe(dragAxis)) buildCarousel(dragAxis);
-  }
-  if (!swiped){
-    const primary = Math.abs(dragAxis === 'x' ? dx : dy);
-    if (primary < SWIPE_START_PX) return;
-    swiped = true;                           // suppress the tap-to-readout click
-    gridEl.classList.add('swiping');
-    try { gridEl.setPointerCapture(e.pointerId); } catch {}
-  }
-  let off = dragAxis === 'x' ? dx : dy;
-  if (!canSwipe(dragAxis)) off *= 0.2;       // nowhere to go → rubber-band
-  dragOff = off;
-  applyDrag(off, 0);
-});
-function endDrag(e){
-  if (!pointerActive) return;
-  pointerActive = false;
-  clearTimeout(lpTimer);
-  try { gridEl.releasePointerCapture(e.pointerId); } catch {}
-  if (!dragAxis){
-    // Resolve the cell at release time. A tap can begin while slideCommit() is
-    // replacing the old grid, in which case browsers commonly discard `click`
-    // because its pointerdown target no longer exists.
-    if (!lpFired){
-      const c = document.elementFromPoint(e.clientX, e.clientY)?.closest('.cell');
-      if (c && gridEl.contains(c) && !c.classList.contains('empty')){
-        suppressTipGridClickUntil = performance.now() + 350;
-        showTip(+c.dataset.di, +c.dataset.h, c);
-      }
-    }
-    return;
-  }
-  if (!swiped){ resetSlide(); return; }
-  // A drag's synthetic click (when the browser emits one) fires before the next
-  // task. Clear the guard afterward too, so browsers that suppress that click do
-  // not make the user's next real tap pay for the preceding swipe.
-  setTimeout(() => { swiped = false; }, 0);
-  const axis = dragAxis, off = dragOff;
-  if (canSwipe(axis) && Math.abs(off) > Math.min(90, dragSize * 0.22)){
-    slideCommit(axis, off < 0 ? -1 : 1);
-  } else {
-    applyDrag(0, 140);                        // spring back
-    clearTimeout(slideCleanupT);
-    slideCleanupT = setTimeout(resetSlide, 160);
-  }
-}
-gridEl.addEventListener('pointerup', endDrag);
-gridEl.addEventListener('pointercancel', endDrag);
 function showTip(di, h, el){
   const cell = days[di]?.cells[h];
   if (!cell) return;
@@ -1496,98 +1328,45 @@ function refreshTip(){
   else hideTip();
 }
 function dismissTipFromPopup(){
-  suppressTipGridClickUntil = performance.now() + 450;
+  carousel.suppressTaps(450);
   setTimeout(hideTip, 0);
 }
 document.addEventListener('click', e => {
   if (!e.target.closest('.cell') && !e.target.closest('.tip')) hideTip();
 }, true);
-makeDraggablePopup('tip', tipEl, () => {
-  clearTimeout(tipTimer);
-  if (!tipEl.hidden) tipTimer = setTimeout(hideTip, 15000);
-}, () => clearTimeout(tipTimer), null, dismissTipFromPopup);
+popupDragger('tip', tipEl, {
+  beforeDrag: () => clearTimeout(tipTimer),
+  afterDrag: () => {
+    clearTimeout(tipTimer);
+    if (!tipEl.hidden) tipTimer = setTimeout(hideTip, 15000);
+  },
+  onTap: dismissTipFromPopup,
+});
 
 /* ---------- Settings sheet ---------- */
-let shareFile = null, shareRevision = 0, shareBuiltRevision = -1;
-let sharePreparing = false;
-function setShareButtonReady(ready){
-  const button = $('#shareView');
-  button.disabled = !ready;
-}
-function invalidateShare(){
-  shareRevision++;
-  shareFile = null;
-  shareBuiltRevision = -1;
-  setShareButtonReady(false);
-  if (!sheetEl.hidden) setTimeout(() => { if (!sheetEl.hidden) prepareShare(); }, 0);
-}
-async function prepareShare(){
-  if (!currentForecastMeta || gridEl.classList.contains('loading')){
-    setShareButtonReady(false);
-    return;
-  }
-  if (shareFile && shareBuiltRevision === shareRevision){
-    setShareButtonReady(true);
-    return;
-  }
-  if (sharePreparing) return;
-  const revision = shareRevision;
-  sharePreparing = true;
-  try {
-    const file = await AppCore.createGridSnapshotFile({
-      grid: gridEl,
-      overlays: [fx.wcanvas, fx.canvas],
-      appName: APP_NAME,
-      placeName: place.name,
-      filenamePrefix: '24x7',
-      snapshotClass: 'snapshot-no-cell-borders',
-    });
-    if (revision !== shareRevision) return;
-    shareFile = file;
-    shareBuiltRevision = revision;
-    setShareButtonReady(true);
-  } catch (err) {
-    if (revision !== shareRevision) return;
-    console.warn(err);
-  } finally {
-    sharePreparing = false;
-    if (revision !== shareRevision && !sheetEl.hidden){
-      setTimeout(() => { if (!sheetEl.hidden) prepareShare(); }, 0);
-    }
-  }
-}
+// The snapshot is built on the first Share tap (not on every sheet open) and
+// cached until the grid changes; AppCore.createShareManager owns that lifecycle.
+const shareManager = AppCore.createShareManager({
+  button: $('#shareView'),
+  grid: gridEl,
+  appName: APP_NAME,
+  url: 'https://dsparks.github.io/24x7/',
+  filenamePrefix: '24x7',
+  snapshotClass: 'snapshot-no-cell-borders',
+  overlays: () => [fx.wcanvas, fx.canvas],
+  placeName: () => place.name,
+  ready: () => !!currentForecastMeta && !gridEl.classList.contains('loading'),
+  onShareStart: () => { closeSheet(); hideTip(); legendEl.hidden = true; },
+});
+function invalidateShare(){ shareManager.invalidate(); }
 function openSheet(){
   syncSheet();
   sheetEl.hidden = false;
-  if (shareFile && shareBuiltRevision === shareRevision) setShareButtonReady(true);
-  else { setShareButtonReady(false); prepareShare(); }
+  shareManager.sync();
 }
 function closeSheet(){ sheetEl.hidden = true; }
 sheetEl.addEventListener('click', e => { if (e.target.dataset.close !== undefined) closeSheet(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeSheet(); hideTip(); } });
-
-$('#shareView').addEventListener('click', async () => {
-  const button = $('#shareView');
-  if (!shareFile) return;
-  button.disabled = true;
-  closeSheet();
-  hideTip();
-  legendEl.hidden = true;
-  try {
-    await AppCore.shareSnapshotFile(shareFile, {
-      appName: APP_NAME,
-      placeName: place.name,
-      url: 'https://dsparks.github.io/24x7/',
-    });
-  } catch (err) {
-    if (err?.name !== 'AbortError'){
-      console.warn(err);
-      AppCore.showToast('Couldn’t create the screenshot');
-    }
-  } finally {
-    button.disabled = false;
-  }
-});
 
 function syncSheet(){
   $('#appName').textContent = APP_NAME;
@@ -1693,9 +1472,10 @@ function recolorRun(){       // live recolor without rebuilding the grid DOM
     if (el.classList.contains('empty')) return;
     const cell = days[+el.dataset.di]?.cells[+el.dataset.h];
     if (!cell) return;
-    const c = cellRGB(cell); el.style.background = rgbStr(c);
+    const runIdx = cellRunIdx(cell);
+    const c = cellRGB(cell, settings.view, runIdx); el.style.background = rgbStr(c);
     const t = el.querySelector('.t');
-    if (t){ t.style.color = effInk(+el.dataset.di, +el.dataset.h, c); t.textContent = cellNumber(cell) ?? ''; }
+    if (t){ t.style.color = effInk(+el.dataset.di, +el.dataset.h, c); t.textContent = cellNumber(cell, settings.view, runIdx) ?? ''; }
   });
   invalidateShare();
 }
@@ -1998,6 +1778,7 @@ let searchSeq = 0;          // monotonic token: only the latest query may render
 let searchAbort = null;     // cancels the in-flight fetch when a newer keystroke arrives
 let searchTimer = 0;
 let hits = [];              // current result objects
+let hitsQuery = '';         // the query `hits` belongs to (guards Enter against stale results)
 let activeIdx = -1;         // keyboard-highlighted row
 
 function cancelSearch(){
@@ -2018,14 +1799,14 @@ function highlightMatch(name, q){            // bold the matched run within the 
 }
 function openResults(){ resultsEl.hidden = false; searchBox.setAttribute('aria-expanded', 'true'); }
 function closeResults(){
-  resultsEl.hidden = true; resultsEl.innerHTML = ''; hits = []; activeIdx = -1;
+  resultsEl.hidden = true; resultsEl.innerHTML = ''; hits = []; hitsQuery = ''; activeIdx = -1;
   searchBox.setAttribute('aria-expanded', 'false');
   searchInput.removeAttribute('aria-activedescendant');
 }
 function showMsg(text){ openResults(); resultsEl.innerHTML = `<li class="result-msg">${escHtml(text)}</li>`; hits = []; activeIdx = -1; }
 
 function renderHits(items, q){
-  hits = items; activeIdx = -1;
+  hits = items; hitsQuery = q; activeIdx = -1;
   resultsEl.innerHTML = '';
   items.forEach((r, i) => {
     const sub = [r.admin1, r.country].filter(Boolean).join(', ');
@@ -2090,7 +1871,7 @@ function rankHits(items, q, ref){
   }).sort((a, b) => b.s - a.s || a.i - b.i).map(x => x.r);
 }
 
-async function runSearch(q){
+async function runSearch(q, autoPick = false){
   const seq = ++searchSeq;
   searchAbort?.abort();
   searchAbort = new AbortController();
@@ -2100,9 +1881,12 @@ async function runSearch(q){
     if (seq !== searchSeq) return;                 // a newer query superseded us
     if (!res.length) return showMsg('No matches');
     renderHits(rankHits(res, q, lastCoords), q);   // soft re-rank: closeness + US + population
+    if (autoPick && hits.length) choose(0);        // Enter arrived before results — honor it now
   } catch (err) {
-    if (err.name === 'AbortError' || seq !== searchSeq) return;
-    showMsg('Search error — try again');
+    if (seq !== searchSeq) return;
+    if (err.name === 'AbortError') return;         // superseded by a newer keystroke
+    // A timeout is NOT a supersede: say so instead of leaving "Searching…" up forever.
+    showMsg(err.name === 'TimeoutError' ? 'Search timed out — try again' : 'Search error — try again');
   }
 }
 
@@ -2127,7 +1911,8 @@ searchInput.addEventListener('keydown', e => {
     e.preventDefault();
     if (isTestQuery(q)){ resetSearch(); addTestPlace(); return; }
     if (activeIdx >= 0) choose(activeIdx);
-    else if (hits.length) choose(0);                // Enter picks the top hit
+    else if (hits.length && hitsQuery === q) choose(0);   // Enter picks the top hit — of THIS query
+    else if (q.length >= 2){ clearTimeout(searchTimer); runSearch(q, true); }   // results still pending → search now, then pick
   } else if (e.key === 'Escape'){
     if (!resultsEl.hidden) closeResults(); else resetSearch();
   }
@@ -2362,8 +2147,16 @@ window.addEventListener('resize', () => {
 });
 window.addEventListener('orientationchange', () => setTimeout(() => { render(); repositionVisiblePopups(); }, 150));
 
-// Live now-line: nudge it along every 30s (hour rollover lands on a fresh refetch).
-setInterval(() => { if (days.length) placeNowLine(); }, 30000);
+// Live now-line: nudge it along every 30s. Crossing midnight re-renders so the
+// day headers and night shading move to the new "today" even if a refetch fails.
+let lastNowKey = null;
+setInterval(() => {
+  if (!days.length) return;
+  const key = forecastNow().key;
+  if (lastNowKey && key !== lastNowKey) render();
+  else placeNowLine();
+  lastNowKey = key;
+}, 30000);
 // Auto-refresh the forecast every 15 min so it never goes stale while left open.
 setInterval(() => { if (lastCoords) load(lastCoords.lat, lastCoords.lon); }, 15 * 60 * 1000);
 // Re-acquire Current Location every 5 min so its pane stays current as you move. Silent

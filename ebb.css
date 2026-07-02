@@ -87,12 +87,19 @@ body.desktop-frame::after{
   box-shadow:0 -1px 0 rgba(210,235,255,.18);
   pointer-events:none;
 }
-.grid.loading .cell{
-  background:linear-gradient(100deg,#07101a 30%,#102033 50%,#07101a 70%);
-  background-size:200% 100%;
+/* loading shimmer — ONE transform-animated overlay (compositable) instead of
+   animating background-position on 168 cells. */
+.grid.loading .cell{background:#0a1526}
+.grid.loading::after{
+  content:"";
+  position:absolute;inset:0;
+  z-index:2;pointer-events:none;
+  background:linear-gradient(100deg,transparent 34%,rgba(160,205,255,.07) 50%,transparent 66%);
+  transform:translateX(-100%);
   animation:sh 1.2s linear infinite;
+  will-change:transform;
 }
-@keyframes sh{to{background-position:-200% 0}}
+@keyframes sh{to{transform:translateX(100%)}}
 
 /* animation overlay */
 .fx{position:fixed;z-index:6;pointer-events:none;left:0;top:0}
@@ -108,7 +115,8 @@ body.desktop-frame::after{
   backdrop-filter:blur(8px);max-width:min(92vw,440px);text-align:center;
   pointer-events:auto;touch-action:none;cursor:grab;user-select:none;
 }
-.tip.dragging{cursor:grabbing}
+/* while dragging, skip the backdrop re-blur per frame (mobile GPUs pay for it) */
+.tip.dragging{cursor:grabbing;backdrop-filter:none}
 .tip.top{bottom:auto;top:calc(clamp(64px,11vh,150px) - var(--tip-shift,0px))}
 .tip b{font-weight:700}
 .tip .tip-place{display:block;font-size:.82em;color:var(--ink);font-weight:700}
@@ -121,6 +129,7 @@ body.desktop-frame::after{
 .tip .tip-facts>span+span::before{content:"·";padding:0 6px;color:var(--muted)}
 .tip .tide-rise{color:#6fd3ff}
 .tip .tide-fall{color:#ffb27f}
+.tip .tip-bite{display:block;margin-top:4px;color:#7fffd4;font-weight:600}
 
 /* ---------- First-run coach marks ---------- */
 .coach{position:fixed;inset:0;z-index:60;color:var(--ink);animation:coachIn .25s ease}
@@ -216,3 +225,11 @@ body.desktop-frame::after{
 .r-name b{color:#7fb0ff;font-weight:700}
 .r-sub{font-size:.8rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .result-msg{padding:.6rem;color:var(--muted);font-size:.88rem;text-align:center}
+
+/* ---------- Reduced motion: still every CSS animation (canvas fx handle this in JS) */
+@media (prefers-reduced-motion:reduce){
+  .grid.loading::after{animation:none;display:none}
+  .sw-arrows{animation:none}
+  .coach{animation:none}
+  .sheet-card{animation:none}
+}

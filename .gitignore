@@ -12,6 +12,7 @@ Thumbs.db
 desktop.ini
 .DS_Store
 
-# Bluesky bot local output and dependencies
+# Bluesky bot local output, dependencies, and per-mention retry state
 bot/node_modules/
+bot/state.json
 bot-output.jpg

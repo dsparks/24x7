@@ -1,0 +1,5 @@
+#!/bin/sh
+# Keep the service-worker cache name in lockstep with shell content.
+# Enable once per clone: git config core.hooksPath .githooks
+node tools/update-sw-cache.mjs || exit 1
+git add sw.js

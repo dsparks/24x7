@@ -71,7 +71,20 @@ npm test
 
 ## Release checklist
 
-The service worker serves the app shell cache-first. Whenever any shipped HTML,
-CSS, JavaScript, font, icon, or manifest changes, increment the `CACHE` name near
-the top of `sw.js` before deploying. Without that bump, installed copies can
-continue running the previous shell.
+The service worker serves the app shell cache-first, so `sw.js`'s `CACHE` name
+must change whenever any shipped shell file changes. This is automated: the
+cache name is a content hash of every precached file, written by
+
+```sh
+node tools/update-sw-cache.mjs
+```
+
+Enable the pre-commit hook once per clone so it can never be forgotten:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+After editing any SVG artwork, regenerate the PNG social cards and touch icons
+(`share-*.png`, `icon-*-180.png`) with `node tools/render-assets.mjs` (requires
+`npm install` in `bot/` for Playwright).

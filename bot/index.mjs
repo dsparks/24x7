@@ -3,14 +3,18 @@ import { chromium } from 'playwright';
 import { createServer } from 'node:http';
 import { readFile, writeFile } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   SITE_URL,
+  gaveUpText,
   helpText,
   locationFromPost,
   missingPlaceText,
+  pendingMentions,
   placeLabel,
-  postRkey,
+  pruneState,
   replyRefs,
+  replyRkey,
   replyText,
 } from './lib.mjs';
 
@@ -55,6 +59,8 @@ async function startStaticServer(){
       const relative = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
       const file = resolve(ROOT, relative);
       if (file !== ROOT && !file.startsWith(ROOT + sep)) throw new Error('Invalid path');
+      // Serve only app-shell file types; keeps .git/, docs, and configs unreachable.
+      if (!MIME[extname(file)] || relative.split(/[\\/]/).some(part => part.startsWith('.'))) throw new Error('Not served');
       const bytes = await readFile(file);
       response.writeHead(200, {
         'cache-control': 'no-store',
@@ -151,7 +157,7 @@ async function createReply(agent, notification, text, embed){
     await agent.com.atproto.repo.createRecord({
       repo: agent.session.did,
       collection: 'app.bsky.feed.post',
-      rkey: postRkey(notification.uri),
+      rkey: replyRkey(notification),
       record,
     });
   } catch (error) {
@@ -172,8 +178,38 @@ async function uploadScreenshot(agent, image, alt){
   };
 }
 
-async function markSeen(agent, notification){
-  await agent.app.bsky.notification.updateSeen({ seenAt: notification.indexedAt });
+/* ---------- Durable per-mention state ----------
+ * Persisted across runs (actions/cache in CI). This — not Bluesky's isRead —
+ * decides what still needs work, so one failing mention can't wedge the queue
+ * (retry cap) and a >100-notification backlog can't silently drop mentions
+ * (cursor pagination + our own dedup). */
+const STATE_FILE = process.env.BOT_STATE_FILE || fileURLToPath(new URL('state.json', import.meta.url));
+const MAX_ATTEMPTS = 3;
+const LOOKBACK_MS = 3 * 86400000;
+const MAX_PAGES = 5;
+
+async function readState(){
+  try { return JSON.parse(await readFile(STATE_FILE, 'utf8')); }
+  catch { return { mentions: {} }; }
+}
+async function writeState(state){
+  await writeFile(STATE_FILE, JSON.stringify(pruneState(state), null, 1));
+}
+
+/* All mention notifications inside the lookback window, cursor-paginated so a
+ * backlog deeper than one page is still fully visible. */
+async function listRecentMentions(agent){
+  const out = [];
+  let cursor;
+  for (let page = 0; page < MAX_PAGES; page++){
+    const response = await agent.app.bsky.notification.listNotifications({ limit: 100, reasons: ['mention'], cursor });
+    const items = response.data.notifications || [];
+    out.push(...items);
+    cursor = response.data.cursor;
+    const oldest = items[items.length - 1];
+    if (!cursor || !items.length || (oldest && Date.now() - new Date(oldest.indexedAt) > LOOKBACK_MS)) break;
+  }
+  return out;
 }
 
 async function dryRun(query){
@@ -199,16 +235,16 @@ async function runBot(){
     password: required('BLUESKY_APP_PASSWORD'),
   });
 
-  const response = await agent.app.bsky.notification.listNotifications({
-    limit: 100,
-    reasons: ['mention'],
+  const state = await readState();
+  const notifications = await listRecentMentions(agent);
+  const mentions = pendingMentions(notifications, state, {
+    botDid: agent.session.did,
+    maxAttempts: MAX_ATTEMPTS,
+    lookbackMs: LOOKBACK_MS,
   });
-  const mentions = response.data.notifications
-    .filter(notification => !notification.isRead && notification.author.did !== agent.session.did)
-    .sort((a, b) => new Date(a.indexedAt) - new Date(b.indexedAt));
 
   if (!mentions.length){
-    console.log('No unread mentions.');
+    console.log('No pending mentions.');
     return;
   }
 
@@ -216,35 +252,43 @@ async function runBot(){
   await renderer.open();
   try {
     for (const notification of mentions){
+      const entry = state.mentions[notification.uri] ||= { attempts: 0 };
+      entry.attempts++;
+      entry.lastAt = new Date().toISOString();
       const query = locationFromPost(notification.record?.text);
       try {
         if (!query){
           await createReply(agent, notification, helpText(agent.session.handle));
-          await markSeen(agent, notification);
-          continue;
+        } else {
+          const place = await geocode(query);
+          if (!place){
+            await createReply(agent, notification, missingPlaceText(query));
+          } else {
+            const label = placeLabel(place);
+            const { image, state: renderState } = await renderer.capture(place);
+            const alt = `24x7 seven-day hourly weather grid for ${label}. Daily Fahrenheit ranges: ${renderState.summary}.`;
+            const embed = await uploadScreenshot(agent, image, alt);
+            await createReply(agent, notification, replyText(label), embed);
+            console.log(`Replied to ${notification.uri} with ${label}. ${SITE_URL}`);
+          }
         }
-
-        const place = await geocode(query);
-        if (!place){
-          await createReply(agent, notification, missingPlaceText(query));
-          await markSeen(agent, notification);
-          continue;
-        }
-
-        const label = placeLabel(place);
-        const { image, state } = await renderer.capture(place);
-        const alt = `24x7 seven-day hourly weather grid for ${label}. Daily Fahrenheit ranges: ${state.summary}.`;
-        const embed = await uploadScreenshot(agent, image, alt);
-        await createReply(agent, notification, replyText(label), embed);
-        await markSeen(agent, notification);
-        console.log(`Replied to ${notification.uri} with ${label}. ${SITE_URL}`);
+        entry.status = 'done';
       } catch (error) {
-        console.error(`Could not process ${notification.uri}:`, error);
-        break;
+        // Move on to the next mention — one bad mention must not block the queue.
+        console.error(`Could not process ${notification.uri} (attempt ${entry.attempts}/${MAX_ATTEMPTS}):`, error);
+        if (entry.attempts >= MAX_ATTEMPTS){
+          entry.status = 'gave-up';
+          try { await createReply(agent, notification, gaveUpText(query)); }
+          catch (replyError) { console.error(`Could not send the give-up reply for ${notification.uri}:`, replyError); }
+        }
       }
+      await writeState(state);          // after every mention, so a crash loses nothing
     }
   } finally {
     await renderer.close();
+    // Clear the notification bell. Safe to be coarse: state.json (not isRead)
+    // decides what still needs work on the next run.
+    await agent.app.bsky.notification.updateSeen({ seenAt: new Date().toISOString() }).catch(() => {});
   }
 }
 

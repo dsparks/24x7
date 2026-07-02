@@ -117,12 +117,14 @@ cannot find it, the bot asks for a more specific city/state/country.
 
 ## Operational notes
 
-- The bot uses a deterministic reply record key derived from the mentioned post.
-  Retrying a completed workflow cannot create a duplicate reply.
-- Successfully handled mentions are marked as read on Bluesky.
-- A failed mention is left unread so the next scheduled run can retry it.
-- Processing stops at the first transient failure so a later notification is not
-  marked read ahead of a failed earlier one.
+- The bot uses a deterministic reply record key derived from the mentioned post
+  and its author. Retrying a completed workflow cannot create a duplicate reply.
+- Per-mention progress lives in a small state file (`BOT_STATE_FILE`, persisted
+  between scheduled runs with `actions/cache`), not in Bluesky's read markers.
+  Mentions are cursor-paginated, so backlogs deeper than 100 are still handled.
+- A failed mention is retried on later runs, up to 3 attempts; after that the
+  bot replies with a brief apology and moves on, so one bad mention can never
+  block the queue.
 - The ten-minute schedule stays comfortably below Bluesky's daily login limit.
 - GitHub disables scheduled workflows in public repositories after 60 days with
   no repository activity. A commit or manual workflow run re-enables them.
